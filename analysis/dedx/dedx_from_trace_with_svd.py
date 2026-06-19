@@ -28,7 +28,7 @@ from scipy.interpolate import make_smoothing_spline, CubicSpline
 # Paramètres globaux
 # ══════════════════════════════════════════════════════════════════════════════
 
-INPUT_FILE    = "../../simulation_output/T2F_G4.h5"
+INPUT_FILE    = "../../simulation_output/T2F_G4_native.h5"
 OUTPUT_DIR    = "../../dedx_from_data/G4"
 DIAG_DIR      = "diag"
 PDF_OUT       = "results.pdf"

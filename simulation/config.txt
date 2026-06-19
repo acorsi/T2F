@@ -1,9 +1,8 @@
 sequential no
-parallel 11
+parallel 14
 events 1000000
-elossmodel G4 #G4 LG SRIM
-elosstreat svd #native svd
-pad 2 #step size in mm
-pressure 300 #mbar
-skipgefline 100000 #for target file, skip some gef lines
-
+elossmodel G4
+elosstreat svd
+pad 2
+pressure 300
+skipgefline 0
