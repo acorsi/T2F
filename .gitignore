@@ -1,0 +1,16 @@
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+simulation_output/
+dedx_from_data/
+diag/
+
+*.h5
+results.pdf
+
+.DS_Store
+simulation/inputs/gef/MyYields
+simulation/inputs/gef/*.lmd

@@ -1,0 +1,5 @@
+train_dann_ae_final.py : modèle final, simplifié pour la prédiction de Z.
+Explore_regression.py : Fait une régression plutôt qu'une classification pour Z (exploite le résultat du fichier précédent - pas de ré-entrainement)
+train_dann_ae_mass.py : Entrainement pour la masse.
+explore_regression_mass.py : Regression de la masse, sans réentrainement (exploite résultat précédent).
+train_nu_from_mass.py : prediction de nu.
