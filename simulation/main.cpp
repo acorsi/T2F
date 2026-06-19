@@ -43,6 +43,7 @@ int main(int argc, char** argv) {
         bool parallel = !cfg.sequential;
         int numThreads = cfg.parallel;
 
+        std::filesystem::path base=std::filesystem::current_path().parent_path().parent_path();     // -> /Users/acorsi/codes/T2F;
         std::cout << "Configuration loaded from config.txt\n";
         std::cout << "Mode: "
             << (parallel ? "PARALLEL" : "SEQUENTIAL")
@@ -65,7 +66,6 @@ int main(int argc, char** argv) {
             << cfg.pressure
             << " mbar\n";
 
-        std::filesystem::path base="/Users/acorsi/codes/T2F_v2"; 
 
         auto  gefFile = base / "simulation/inputs/gef/MyYields";
         auto  hdf5File = base / "simulation_output" / ("T2F_"+DEDX+"_"+elosstreat+".h5");
