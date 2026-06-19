@@ -1,0 +1,30 @@
+#pragma once
+#include "event.h"
+#include "PadGeometry.h"
+#include <vector>
+#include <random>
+#include <memory>
+
+class Processor {
+public:
+    Processor();
+    void processChunk(std::vector<Event>& events);
+    void processFragment(Fragment& frag, double pInit[3], double v[3], std::mt19937& rng);
+
+private:
+    void processEvent(Event& event, std::mt19937& rng);
+
+    std::vector<std::mt19937> m_rngs;  // un par thread OpenMP
+
+    // Paramètres physiques
+    double v_e;         // vitesse dérive électron, cm/ns
+    double diff_trans;  // coeff diffusion transverse, cm/sqrt(cm)
+    double diff_long;   // coeff diffusion longitudinale, cm/sqrt(cm)
+    double dKG;          // distance cathode-grille, cm
+    double dGA;          // distance grille-anode, cm
+
+    double noiseSigma;     // sigma du bruit électronique par pad, en électrons
+    double noiseThreshold; // seuil de déclenchement, en électrons
+
+    std::unique_ptr<PadGeometry> m_padGeom;
+};

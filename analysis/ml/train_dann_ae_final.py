@@ -20,8 +20,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 import time
 
 # ── Config ────────────────────────────────────────────────────────────────────
-H5_SOURCE  = '../../simulation_output/T2F_G4_Corr.h5'
-H5_TARGET  = '../../simulation_output/T2F_G4.h5'
+H5_SOURCE  = '../simulation_output/T2F_G4_Corr.h5'
+H5_TARGET  = '../simulation_output/T2F_G4.h5'
 OUT_PDF    = 'explore_dann_ae_final.pdf'
 OUT_MODEL  = 'dann_ae_final_model.pt'
 

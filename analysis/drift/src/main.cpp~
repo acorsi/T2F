@@ -1,0 +1,66 @@
+#include "event.h"
+#include "read_h5.h"
+#include "process.h"
+#include "write_h5.h"
+#include <iostream>
+#include <string>
+
+static void printFragment(const std::string& tag, const Fragment& f)
+{
+    std::cout << "  " << tag
+              << "  Z=" << f.Z << " A=" << f.A
+              << " n=" << f.n << " KE=" << f.KE
+              << "  raw[0..4]:";
+    for (int i = 0; i < 5 && i < (int)f.raw_trace.size(); ++i)
+        std::cout << " " << f.raw_trace[i];
+    std::cout << "  n_hits=" << f.proc_trace.size() << " :";
+    for (int i = 0; i < 5 && i < (int)f.proc_trace.size(); ++i)
+        std::cout << " (" << f.proc_trace[i].row << ","
+                   << f.proc_trace[i].col << ","
+                   << f.proc_trace[i].charge << ")";
+    std::cout << "\n";
+}
+
+int main(int argc, char* argv[])
+{
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " input.h5 output.h5\n";
+        return 1;
+    }
+
+    ReaderH5  reader(argv[1]);
+    Processor processor;
+
+    const hsize_t nEvents = reader.nEvents();
+    WriterH5  writer(argv[2], argv[1], nEvents);
+
+    hsize_t nProcessed = 0;
+    bool firstChunk = true;
+
+    for (hsize_t offset = 0; offset < nEvents; offset += CHUNK_SIZE)
+    {
+        std::vector<Event> chunk = reader.readChunk(offset, CHUNK_SIZE);
+        if (chunk.empty()) break;
+
+        processor.processChunk(chunk);
+        writer.writeChunk(chunk, offset);
+
+        if (firstChunk) {
+            std::cout << "\n--- Verification (3 premiers events) ---\n";
+            for (int i = 0; i < 3 && i < (int)chunk.size(); ++i) {
+                std::cout << "Event " << i << ":\n";
+                printFragment("L", chunk[i].L);
+                printFragment("H", chunk[i].H);
+            }
+            std::cout << "----------------------------------------\n\n";
+            firstChunk = false;
+        }
+
+        nProcessed += chunk.size();
+        std::cout << "Processed " << nProcessed << " / " << nEvents
+                  << " events\r" << std::flush;
+    }
+
+    std::cout << "\nDone. Total: " << nProcessed << " events\n";
+    return 0;
+}

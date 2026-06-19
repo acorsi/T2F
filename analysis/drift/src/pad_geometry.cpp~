@@ -1,0 +1,98 @@
+#include "PadGeometry.h"
+#include <cmath>
+#include <stdexcept>
+
+// =============================================================================
+// QuincunxGeometry
+// =============================================================================
+
+QuincunxGeometry::QuincunxGeometry(double pad_size_cm, double radius_cm)
+    : m_padSize(pad_size_cm), m_radius(radius_cm)
+{
+}
+
+void QuincunxGeometry::padCenter(int row, int col, double& cx, double& cy) const
+{
+    // row pair  -> offset 0 ; row impair -> offset pad_size/2
+    // Modulo correct pour row négatif :
+    int rmod = ((row % 2) + 2) % 2;
+    double offset = (rmod != 0) ? m_padSize / 2.0 : 0.0;
+
+    cx = col * m_padSize + offset;
+    cy = row * m_padSize;
+}
+
+PadID QuincunxGeometry::padAt(double x, double y) const
+{
+    int row = static_cast<int>(std::floor(y / m_padSize + 0.5));
+    int rmod = ((row % 2) + 2) % 2;
+    double offset = (rmod != 0) ? m_padSize / 2.0 : 0.0;
+    int col = static_cast<int>(std::floor((x - offset) / m_padSize + 0.5));
+    return {row, col};
+}
+
+std::vector<std::pair<PadID,double>>
+QuincunxGeometry::chargeSplit(double x, double y, double sigma) const
+{
+    std::vector<std::pair<PadID,double>> result;
+
+    // Fenêtre : +/- 3 sigma autour de (x,y), bornée à quelques pads
+    constexpr double N_SIGMA = 5.0;
+    double halfWindow = N_SIGMA * sigma + m_padSize;  // marge de sécurité
+
+    // Pad central pour borner la recherche en row/col
+    PadID center = padAt(x, y);
+    int rowSpan = static_cast<int>(std::ceil(halfWindow / m_padSize)) + 1;
+    int colSpan = rowSpan + 1; // marge supplémentaire pour l'offset quinconce
+
+    const double inv_sqrt2_sigma = 1.0 / (std::sqrt(2.0) * sigma);
+
+    for (int row = center.row - rowSpan; row <= center.row + rowSpan; ++row)
+    {
+        int rmod = ((row % 2) + 2) % 2;
+        double offset = (rmod != 0) ? m_padSize / 2.0 : 0.0;
+
+        for (int col = center.col - colSpan; col <= center.col + colSpan; ++col)
+        {
+            double cx = col * m_padSize + offset;
+            double cy = row * m_padSize;
+
+            // Pad gardé si son centre est dans le rayon utile
+            double centerDist = std::sqrt(cx*cx + cy*cy);
+            if (centerDist > m_radius)
+                continue;
+
+            // Bornes du pad en x et y
+            double x_lo = cx - m_padSize / 2.0;
+            double x_hi = cx + m_padSize / 2.0;
+            double y_lo = cy - m_padSize / 2.0;
+            double y_hi = cy + m_padSize / 2.0;
+
+            // Intégrale gaussienne 2D isotrope factorisée en x et y
+            double Ix = 0.5 * (std::erf((x_hi - x) * inv_sqrt2_sigma)
+                              - std::erf((x_lo - x) * inv_sqrt2_sigma));
+            double Iy = 0.5 * (std::erf((y_hi - y) * inv_sqrt2_sigma)
+                              - std::erf((y_lo - y) * inv_sqrt2_sigma));
+
+            double w = Ix * Iy;
+            if (w > 1e-6) {
+                result.push_back({PadID{row, col}, w});
+            }
+        }
+    }
+
+    return result;
+}
+
+// =============================================================================
+// Factory
+// =============================================================================
+
+std::unique_ptr<PadGeometry> makePadGeometry(const std::string& kind,
+                                              double param1, double param2)
+{
+    if (kind == "quincunx")
+        return std::make_unique<QuincunxGeometry>(param1, param2);
+
+    throw std::runtime_error("Unknown pad geometry kind: " + kind);
+}
