@@ -3,6 +3,8 @@ build/
 *.a
 *.so
 *.dylib
+*.pt
+*.pdf
 
 simulation_output/
 dedx_from_data/
@@ -12,5 +14,6 @@ diag/
 results.pdf
 
 .DS_Store
+simulation/config.txt
 simulation/inputs/gef/MyYields
 simulation/inputs/gef/*.lmd
