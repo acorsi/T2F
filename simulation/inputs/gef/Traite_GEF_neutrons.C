@@ -191,8 +191,8 @@ int main() {
             return 1;
         }
 
-        cout << Z1 << " " << a1 << " " << KE1 << " 0 "
-            << Z2 << " " << a2 << " " << KE2 << " 0 "
+        cout << Z1 << " " << A1 << " " << KE1 << " 0 "
+            << Z2 << " " << A2 << " " << KE2 << " 0 "
             << n1 << " " << n2<<" ";
 
         // Fragment 1 : direction isotrope
