@@ -58,6 +58,10 @@ int main(int argc, char** argv) {
             << Nevent
             << "\n";
 
+        std::cout << "Skip GEF: "
+            << SKIP_GEF_LINE
+            << "\n";
+
         std::cout << "Energy loss model: "
             << DEDX
             << "\n";

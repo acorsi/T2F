@@ -266,7 +266,7 @@ void HDF5Writer::writeFragmentPair(const FragmentPair& pair, const int event_ID)
     const Fragment& light = pair.getLightFragment();
     const Fragment& heavy = pair.getHeavyFragment();
     int eventID = pair.getEventID();
-
+    angle_.push_back(pair.getAngle());
     //const FeatureSet& featLight = light.getFeatures();
     //const FeatureSet& featHeavy = heavy.getFeatures();
     
@@ -431,7 +431,7 @@ void HDF5Writer::flushBuffers() {
     // writeVarLenColumnHelper(file_, "/H/bethe_trace", betheTrace_heavy_);
     writeVarLenColumnHelper(file_, "/H/raw_trace", rawTrace_heavy_);
     // writeVarLenColumnHelper(file_, "/H/denoised_trace", denoisedTrace_heavy_);
-    
+    writeColumnHelper(file_,"/event/angle",angle_,H5::PredType::NATIVE_DOUBLE);
     // Vider les buffers
     A_light_.clear();
     Z_light_.clear();
@@ -505,7 +505,7 @@ void HDF5Writer::flushBuffers() {
     // betheTrace_heavy_.clear() ;
     rawTrace_heavy_.clear() ;
     // denoisedTrace_heavy_.clear() ;
-    
+    angle_.clear();
     bufferSize_ = 0;
     
   } catch (H5::Exception& e) {
