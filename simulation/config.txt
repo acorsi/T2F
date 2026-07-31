@@ -1,8 +1,8 @@
 sequential no
-parallel 14
+parallel 14 #number of cores
 events 1000000
-elossmodel G4
-elosstreat svd
+elossmodel G4 #G4 LG SRIM
+elosstreat native #native svd
 pad 2
 pressure 300
-skipgefline 0
+skipgefline 1000000 #skip 1e6 gef lines to differentiate target from source

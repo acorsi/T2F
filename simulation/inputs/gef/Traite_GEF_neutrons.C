@@ -192,7 +192,7 @@ int main() {
         }
 
         cout << Z1 << " " << A1 << " " << KE1 << " 0 "
-            << Z2 << " " << A2 << " " << KE2 << " 0 "
+            << Z2 << " " << a2 << " " << KE2 << " 0 "
             << n1 << " " << n2<<" ";
 
         // Fragment 1 : direction isotrope
@@ -262,7 +262,9 @@ int main() {
         cout<<"check "<<check.Px()<<" "<<check.Py()<<" "<<check.Pz()<<" "<<check.M()<<" "<<Eexc<<" "<<gef_masses::GetNuclearMassMeV_fromBE(98,252)-gef_masses::GetNuclearMassMeV_fromBE(Z1,a1)-gef_masses::GetNuclearMassMeV_fromBE(Z2,a2)<<" "<<tke<<endl;
         */
         //cout<<"costheta: "<<(FF1_pre.Vect()).Angle(FF2_pre.Vect())<<" "<<(FF1_post.Vect()).Angle(FF2_post.Vect())<<endl;
-        cout<<(FF1_post.Vect()).Angle(FF2_post.Vect())<<endl;
+        double angle=(FF1_post.Vect()).Angle(FF2_post.Vect());
+        if(std::isnan(angle)) {angle=M_PI;/* cout<<(FF1_post.Vect()).Mag()<<" "<<(FF2_post.Vect()).Mag()<<endl;break;*/}
+        cout<<angle<<endl;
         
         h->Fill(((FF1_pre.Vect()).Angle(FF2_pre.Vect())-(FF1_post.Vect()).Angle(FF2_post.Vect()))/ M_PI * 180.0);
         h2->Fill(n1+n2,((FF1_pre.Vect()).Angle(FF2_pre.Vect())-(FF1_post.Vect()).Angle(FF2_post.Vect()))/ M_PI * 180.0);
