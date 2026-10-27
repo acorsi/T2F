@@ -17,3 +17,9 @@ results.pdf
 simulation/config.txt
 simulation/inputs/gef/MyYields
 simulation/inputs/gef/*.lmd
+simulation/inputs/gef/Traite_GEF.dSYM/
+simulation/inputs/gef/Traite_GEF_neutrons
+simulation/inputs/gef/Traite_GEF_neutrons.dSYM/
+simulation/inputs/gef/fout.root
+simulation/inputs/gef/test
+simulation/inputs/gef/test.dSYM/

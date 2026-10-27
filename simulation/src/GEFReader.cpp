@@ -86,10 +86,10 @@ FragmentPair* GEFReader::readNextPair() {
     double px2, py2, pz2;
     double px2p, py2p, pz2p;
     double angle;
-    std::string angle_str;
+    std::string angle_str="nan";
     if (!(iss >> Z_light >> A_light >> KE_light >> dum 
                 >> Z_heavy >> A_heavy >> KE_heavy >> dum >> n_light >> n_heavy
-                >>  angle_str)) {
+        >>  angle_str)) {
         //std::cerr << "\nERROR parsing GEF event " << eventNumber << "\n";
         std::cerr << "Line = [" << line << "]\n";
         throw std::runtime_error("Invalid GEF format");

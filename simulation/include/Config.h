@@ -10,6 +10,7 @@ struct Config {
 
     std::string elossmodel = "G4";
     std::string elosstreat = "corr";
+    std::string evgenerator = "corr";
 
     double stepsize = 2;
     double pressure = 300.0;

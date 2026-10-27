@@ -22,8 +22,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 import time
 
 # ── Config ────────────────────────────────────────────────────────────────────
-H5_SOURCE  = '../simulation_output/T2F_G4_Corr.h5'
-H5_TARGET  = '../simulation_output/T2F_G4.h5'
+H5_SOURCE  = '../../simulation_output_gef/T2F_G4_svd.h5'
+H5_TARGET  = '../../simulation_output_gef/T2F_G4_native.h5'
 OUT_PDF    = 'explore_dann_ae_mass_kin_G4.pdf'
 OUT_MODEL  = 'dann_ae_mass_kin_model_G4.pt'
 
@@ -247,8 +247,16 @@ for arr in [src_tL, src_tH, tgt_tL_lab, tgt_tH_lab, tgt_tL_unl, tgt_tH_unl]:
     arr /= trace_max
 
 # Classes A_L et A_H
-A_L_unique = np.unique(src['A_L_lab'])
-A_H_unique = np.unique(src['A_H_lab'])
+A_L_unique = np.unique(np.concatenate([
+    src['A_L_lab'],
+    tgt['A_L_lab']
+]))
+
+A_H_unique = np.unique(np.concatenate([
+    src['A_H_lab'],
+    tgt['A_H_lab']
+]))
+
 aL_to_idx  = {a: i for i, a in enumerate(A_L_unique)}
 aH_to_idx  = {a: i for i, a in enumerate(A_H_unique)}
 n_classes_AL = len(A_L_unique)
@@ -564,6 +572,7 @@ with PdfPages(OUT_PDF) as pdf:
         plt.colorbar(im, ax=ax)
         plt.tight_layout(); pdf.savefig(fig); plt.close(fig)
 
+
     # Fig 4 : distribution des résidus
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     for ax, res, sigma, title in [
@@ -588,6 +597,7 @@ with PdfPages(OUT_PDF) as pdf:
                  f'≤{A_TOTAL} : {acc_cons:.3f}', fontsize=11)
     ax.legend(); ax.grid(True, alpha=0.3)
     plt.tight_layout(); pdf.savefig(fig); plt.close(fig)
+
 
 print(f"\nPDF généré : {OUT_PDF}")
 print(f"Accuracy A_L : {acc_AL:.3f}  ±1={acc_pm1_AL:.3f}  σ={sigma_AL:.3f}")

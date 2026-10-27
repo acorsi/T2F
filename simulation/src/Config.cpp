@@ -52,6 +52,9 @@ Config readConfig(const std::string& filename)
     if (values.count("events"))
         cfg.events = std::stoll(values["events"]);
 
+    if (values.count("evgenerator"))
+        cfg.evgenerator = values["evgenerator"];
+
     if (values.count("elossmodel"))
         cfg.elossmodel = values["elossmodel"];
 

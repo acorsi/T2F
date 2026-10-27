@@ -141,8 +141,8 @@ int main() {
         ev >> fission_channel >> ZCN >> ACN >> Eexc
             >> Z1 >> Z2 >> a1 >> a2 >> A1 >> A2
             >> dum >> dum >> dum >> dum
-            >> KE1 >> costh1 >> phi1
-            >> KE2 >> costh2 >> phi2
+            >> dum >> KE1 >> costh1 >> phi1
+            >> dum >> KE2 >> costh2 >> phi2
             >> dummy1 >> dummy2
             >> n1 >> n2 >> tke >> TKE >> dum;
 
@@ -192,7 +192,7 @@ int main() {
         }
 
         cout << Z1 << " " << A1 << " " << KE1 << " 0 "
-            << Z2 << " " << a2 << " " << KE2 << " 0 "
+            << Z2 << " " << A2 << " " << KE2 << " 0 "
             << n1 << " " << n2<<" ";
 
         // Fragment 1 : direction isotrope
