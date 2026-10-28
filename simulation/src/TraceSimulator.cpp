@@ -47,7 +47,11 @@ std::tuple<std::vector<double>, std::vector<double>, double> TraceSimulator::pro
       double energyPrev = currentEnergy ;
       
       // Appel polymorphique !
-      dEdx = energyLossCalc_->computeDeDx(&particle, *material_)*elementalStep*0.1*1000;
+      dEdx = energyLossCalc_->computeDeDx(&particle, *material_) *
+	elementalStep * 0.1 * 1000;
+
+      
+      
       //      std::cout << "TraceSimu : " << currentEnergy << " " << dEdx << std::endl ; 
       /**
        *On ajoute le Straggling.
@@ -55,6 +59,7 @@ std::tuple<std::vector<double>, std::vector<double>, double> TraceSimulator::pro
 
       //on modifie l'amplitude du Straggling pour le denoising data set
       //      double factor = uniform_(rng_)*2.;
+
       double factor=1 ;
       double Strag = stragglingAndNoiseCalc_->computeStraggling(&particle, elementalStep,3*factor) ;
       currentEnergy -= dEdx + Strag ;
@@ -81,6 +86,12 @@ std::tuple<std::vector<double>, std::vector<double>, double> TraceSimulator::pro
     
     if(currentEnergy>0){
       dEdx = energyLastStep-currentEnergy ;
+      /**
+       *On commente la partie bruit Electronique qui n'est
+       *plus faite ici mais dans le code Drift qui transporte
+       *la trace d'ionisation vers le plan de pad
+       **/
+      
       
       /**
        *On ajoute un bruit électronique simple.
@@ -89,15 +100,16 @@ std::tuple<std::vector<double>, std::vector<double>, double> TraceSimulator::pro
        **/
 
       //      double factor = uniform_(rng_)*2. ;
-      double factor=1 ;
-      double sigma=0.060/2.35*factor ; //Largeur bruit Gaussien en MeV => environ 2000 électrons de bruit FWHM
-      double electronicNoise = stragglingAndNoiseCalc_->computeElectronicNoise(sigma) ;
-      
-      if(dEdx+electronicNoise<0) {
-	noisy.push_back(0);
-      }else{
-	noisy.push_back(dEdx+electronicNoise);
-      }
+      // double factor=1 ;
+      // double sigma=0.060/2.35*factor ; //Largeur bruit Gaussien en MeV => environ 2000 électrons de bruit FWHM
+      // double electronicNoise = stragglingAndNoiseCalc_->computeElectronicNoise(sigma) ;
+
+      // if(dEdx+electronicNoise<0) {
+      // 	noisy.push_back(0);
+      // }else{
+      // 	noisy.push_back(dEdx+electronicNoise);
+      // }
+      noisy.push_back(dEdx);
     }else{
       noisy.push_back(energyLastStep);
     }

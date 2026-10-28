@@ -22,8 +22,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 import time
 
 # ── Config ────────────────────────────────────────────────────────────────────
-H5_SOURCE  = '../simulation_output/T2F_G4_Corr.h5'
-H5_TARGET  = '../simulation_output/T2F_G4.h5'
+H5_SOURCE  = '../../simulation_output/T2F_G4_svd.h5'
+H5_TARGET  = '../../simulation_output/T2F_G4_native.h5'
 OUT_PDF    = 'explore_dann_ae_mass_kin_G4.pdf'
 OUT_MODEL  = 'dann_ae_mass_kin_model_G4.pt'
 

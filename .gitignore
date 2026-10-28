@@ -10,7 +10,11 @@ diag/
 
 *.h5
 results.pdf
+*~
+.#*
 
 .DS_Store
 simulation/inputs/gef/MyYields
 simulation/inputs/gef/*.lmd
+__pycache__/
+*.pyc

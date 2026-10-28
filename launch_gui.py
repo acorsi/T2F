@@ -180,6 +180,8 @@ def main():
                             command=lambda: launch(fields, log, btn_launch))
     btn_launch.pack(side="left")
 
+    root.lift()
+    root.focus_force()
     root.mainloop()
 
 
