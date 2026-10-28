@@ -60,7 +60,7 @@ std::tuple<std::vector<double>, std::vector<double>, double> TraceSimulator::pro
       //on modifie l'amplitude du Straggling pour le denoising data set
       //      double factor = uniform_(rng_)*2.;
 
-      double factor=1 ;
+      double factor=1. ;
       double Strag = stragglingAndNoiseCalc_->computeStraggling(&particle, elementalStep,3*factor) ;
       currentEnergy -= dEdx + Strag ;
       if(currentEnergy<0) { currentEnergy = 0; break;} 

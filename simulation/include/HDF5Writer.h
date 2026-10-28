@@ -80,7 +80,7 @@ private:
   std::vector<std::vector<double>>betheTrace_heavy_;
   std::vector<std::vector<double>>rawTrace_heavy_;
   std::vector<std::vector<double>>denoisedTrace_heavy_;
-
+  std::vector<double> angle_;
   size_t bufferSize_;
   const size_t MAX_BUFFER_SIZE = 1000;
     

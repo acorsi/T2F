@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
 
         int Nevent = cfg.events;
         std::string DEDX = cfg.elossmodel;
+        std::string evgenerator = cfg.evgenerator;
         std::string elosstreat = cfg.elosstreat;
 
         double stepSize = cfg.stepsize;
@@ -54,8 +55,16 @@ int main(int argc, char** argv) {
                 << numThreads
                 << "\n";
 
+        std::cout << "Event Generator: "
+            << evgenerator
+            << "\n";
+
         std::cout << "Events: "
             << Nevent
+            << "\n";
+
+        std::cout << "Skip GEF: "
+            << SKIP_GEF_LINE
             << "\n";
 
         std::cout << "Energy loss model: "
@@ -67,8 +76,9 @@ int main(int argc, char** argv) {
             << " mbar\n";
 
 
-        auto  gefFile = base / "simulation/inputs/gef/MyYields";
-        auto  hdf5File = base / "simulation_output" / ("T2F_"+DEDX+"_"+elosstreat+".h5");
+        //auto  gefFile = base / "simulation/inputs/gef/MyYields";
+        auto  gefFile = base / "simulation/inputs" / evgenerator /"MyYields";
+        auto  hdf5File = base / "simulation_output" / ("T2F_"+evgenerator+"_"+DEDX+"_"+elosstreat+".h5");
 
 
         // 1. Setup Material (P10)

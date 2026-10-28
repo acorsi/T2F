@@ -17,7 +17,6 @@ private:
   int Z_;
   double kineticEnergy_;
   int neutronMultiplicity_;
-  
   // Traces et traitement
   double trueR_;
   std::vector<double> betheTrace_;
@@ -48,7 +47,6 @@ public:
   double getKineticEnergy() const { return kineticEnergy_; }
   int getNeutronMultiplicity() const { return neutronMultiplicity_; }
   
-  
   /**
    * Crée un objet Particle pour calculs dE/dx
    * Pas de cache, recréé à chaque appel (négligeable en performance)
@@ -74,7 +72,6 @@ public:
   void setDenoisedTrace(const std::vector<double>& trace) { denoisedTrace_ = trace;}// std::cout<<" Frag denois:"<< denoisedTrace_[denoisedTrace_.size()-1] << "  " << rawTrace_[rawTrace_.size()-1] << std::endl; }
   
   //void setTrueRange(const double R) { trueR_=R; }
-  
   bool hasProcessedData() const { return processedData_.has_value(); }
   const ProcessedData& getProcessedData() const { return processedData_.value(); }
   void setProcessedData(const ProcessedData& data) 

@@ -3,6 +3,8 @@ build/
 *.a
 *.so
 *.dylib
+*.pt
+*.pdf
 
 simulation_output/
 dedx_from_data/
@@ -14,7 +16,15 @@ results.pdf
 .#*
 
 .DS_Store
+simulation/config.txt
 simulation/inputs/gef/MyYields
 simulation/inputs/gef/*.lmd
+
 __pycache__/
 *.pyc
+simulation/inputs/gef/Traite_GEF.dSYM/
+simulation/inputs/gef/Traite_GEF_neutrons
+simulation/inputs/gef/Traite_GEF_neutrons.dSYM/
+simulation/inputs/gef/fout.root
+simulation/inputs/gef/test
+simulation/inputs/gef/test.dSYM/
