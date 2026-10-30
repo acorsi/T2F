@@ -68,7 +68,6 @@ void Processor::build_trace(const FragmentInput& frag_in,
 	  n = static_cast<double>(P(m_rng)) ;
         }
 
-	std::cout << ne << " " << n << std::endl ;
 	out.n_electrons.push_back(n) ;        
         out.sigma_T.push_back(m_cfg.sigma_T(zi));
         out.sigma_L.push_back(m_cfg.sigma_L(zi));
