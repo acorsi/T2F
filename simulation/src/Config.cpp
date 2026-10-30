@@ -4,43 +4,60 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 Config readConfig(const std::string& filename)
 {
-    std::ifstream fin(filename);
 
-    if (!fin) {
-        throw std::runtime_error(
-                "Cannot open configuration file: " + filename);
-    }
+  static const std::unordered_set<std::string> known = {
+    "sequential", "parallel", "skipgefline", "events",
+    "elossmodel", "elosstreat", "stepsize", "pressure"};
+  
+  std::ifstream fin(filename);
 
-    std::unordered_map<std::string,std::string> values;
+  if (!fin) {
+    throw std::runtime_error(
+			     "Cannot open configuration file: " + filename);
+  }
+  
+  std::unordered_map<std::string,std::string> values;
 
-    std::string line;
-    while (std::getline(fin, line)) {
+  int lineNo=0 ;
+  std::string line;
+  while (std::getline(fin, line)) {
+    ++lineNo;
+    
+    // Supprime les lignes vides
+    if (line.empty())
+      continue;
+    
+    // Ignore les commentaires
+    if (line[0] == '#')
+      continue;
+    
+    auto pos = line.find('#');
+    if (pos != std::string::npos)
+      line = line.substr(0, pos);
+    
+    std::istringstream iss(line);
 
-        // Supprime les lignes vides
-        if (line.empty())
-            continue;
+    std::string key, value;
+    if(!(iss >> key)) continue ;
+    
+    if (!known.count(key))
+      throw std::runtime_error("Config: clef inconnue '" + key +
+			       "' (ligne " + std::to_string(lineNo) + ")");
+    
+    if (!(iss >> value))
+      throw std::runtime_error("Config: valeur manquante pour '" + key +
+			       "' (ligne " + std::to_string(lineNo) + ")");
+    
+    values[key] = value;
+  }
 
-        // Ignore les commentaires
-        if (line[0] == '#')
-            continue;
-
-        auto pos = line.find('#');
-        if (pos != std::string::npos)
-            line = line.substr(0, pos);
-
-        std::istringstream iss(line);
-
-        std::string key, value;
-        if (iss >> key >> value)
-            values[key] = value;
-    }
-
-    Config cfg;
-
-    if (values.count("sequential"))
+  Config cfg;
+  
+  if (values.count("sequential"))
         cfg.sequential = (values["sequential"] == "yes");
 
     if (values.count("parallel"))

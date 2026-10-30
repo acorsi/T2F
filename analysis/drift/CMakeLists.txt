@@ -1,81 +1,53 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.16)
 
-# --- Compilateur système Apple (doit être avant project()) ---
-# Le compilateur conda (arm64-apple-darwin20) est incompatible avec macOS 25+
-set(CMAKE_C_COMPILER   "/usr/bin/cc"  CACHE PATH "" FORCE)
-set(CMAKE_CXX_COMPILER "/usr/bin/c++" CACHE PATH "" FORCE)
+# --- Forcer le compilateur système macOS avant project() ---
+# (doit être avant project() sinon ignoré)
+if(APPLE)
+    set(CMAKE_CXX_COMPILER /usr/bin/clang++ CACHE STRING "" FORCE)
+    set(CMAKE_C_COMPILER   /usr/bin/clang   CACHE STRING "" FORCE)
+    execute_process(COMMAND xcrun --show-sdk-path
+                    OUTPUT_VARIABLE CMAKE_OSX_SYSROOT
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set(CMAKE_OSX_SYSROOT ${CMAKE_OSX_SYSROOT} CACHE STRING "" FORCE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0")
+endif()
 
-project(T2F_Processor CXX)
+project(T2F_drift CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# --- HDF5 via conda ---
-set(CONDA_PREFIX "$ENV{CONDA_PREFIX}")
-set(HDF5_ROOT "${CONDA_PREFIX}")
+# --- HDF5 ---
 find_package(HDF5 REQUIRED COMPONENTS C)
+include_directories(${HDF5_INCLUDE_DIRS})
 
-# --- OpenMP : clang Apple nécessite libomp externe ---
-set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp")
-set(OpenMP_CXX_LIB_NAMES "omp")
-set(OpenMP_omp_LIBRARY "${CONDA_PREFIX}/lib/libomp.dylib")
+# --- OpenMP (transparent sur macOS/Linux) ---
+if(APPLE)
+    execute_process(COMMAND brew --prefix libomp
+                    OUTPUT_VARIABLE LIBOMP_PREFIX
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp")
+    set(OpenMP_CXX_LIB_NAMES "omp")
+    set(OpenMP_omp_LIBRARY "${LIBOMP_PREFIX}/lib/libomp.dylib")
+    include_directories("${LIBOMP_PREFIX}/include")
+endif()
 find_package(OpenMP REQUIRED)
 
 # --- Includes ---
-include_directories(include ${HDF5_INCLUDE_DIRS} ${CONDA_PREFIX}/include)
+include_directories(inc)
 
-# --- Sources ---
-set(SOURCES
-    src/main.cpp
-    src/read_h5.cpp
-    src/process.cpp
+# --- Bibliothèque commune ---
+add_library(t2f_lib
+    src/h5reader.cpp
+    src/h5writer.cpp
+    src/processor.cpp
     src/pad_geometry.cpp
-    src/write_h5.cpp
 )
-
-add_executable(t2f_processor ${SOURCES})
-
-target_link_libraries(t2f_processor
-    PRIVATE
+target_link_libraries(t2f_lib
     ${HDF5_LIBRARIES}
     OpenMP::OpenMP_CXX
 )
 
-target_compile_options(t2f_processor PRIVATE -O2 -Wall)
-
-target_link_options(t2f_processor PRIVATE
-    -L${CONDA_PREFIX}/lib
-    -Wl,-rpath,${CONDA_PREFIX}/lib
-)
-
-# --- Exécutable de test ---
-add_executable(test_process
-    test/test_process.cpp
-    src/process.cpp
-    src/pad_geometry.cpp
-)
-
-target_link_libraries(test_process
-    PRIVATE
-    OpenMP::OpenMP_CXX
-)
-
-target_compile_options(test_process PRIVATE -O2 -Wall)
-
-target_link_options(test_process PRIVATE
-    -L${CONDA_PREFIX}/lib
-    -Wl,-rpath,${CONDA_PREFIX}/lib
-)
-
-# --- Étude de convergence du pas d'échantillonnage ---
-add_executable(test_sampling
-    test/test_sampling.cpp
-    src/process.cpp
-    src/pad_geometry.cpp
-)
-target_link_libraries(test_sampling PRIVATE OpenMP::OpenMP_CXX)
-target_compile_options(test_sampling PRIVATE -O2 -Wall)
-target_link_options(test_sampling PRIVATE
-    -L${CONDA_PREFIX}/lib
-    -Wl,-rpath,${CONDA_PREFIX}/lib
-)
+# --- Exécutables ---
+add_executable(process src/main.cpp)
+target_link_libraries(process t2f_lib)

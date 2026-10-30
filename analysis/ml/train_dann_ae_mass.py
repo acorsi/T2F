@@ -24,6 +24,7 @@ import time
 # ── Config ────────────────────────────────────────────────────────────────────
 H5_SOURCE  = '../../simulation_output_gef/T2F_G4_svd.h5'
 H5_TARGET  = '../../simulation_output_gef/T2F_G4_native.h5'
+
 OUT_PDF    = 'explore_dann_ae_mass_kin_G4.pdf'
 OUT_MODEL  = 'dann_ae_mass_kin_model_G4.pt'
 

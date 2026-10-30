@@ -12,11 +12,16 @@ diag/
 
 *.h5
 results.pdf
+*~
+.#*
 
 .DS_Store
 simulation/config.txt
 simulation/inputs/gef/MyYields
 simulation/inputs/gef/*.lmd
+
+__pycache__/
+*.pyc
 simulation/inputs/gef/Traite_GEF.dSYM/
 simulation/inputs/gef/Traite_GEF_neutrons
 simulation/inputs/gef/Traite_GEF_neutrons.dSYM/
