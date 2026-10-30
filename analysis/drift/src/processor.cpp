@@ -1,5 +1,6 @@
 #include "processor.hpp"
 #include <cmath>
+#include <iostream>
 
 Processor::Processor(const DetectorConfig& cfg, uint64_t seed)
     : m_cfg(cfg), m_rng(seed)
@@ -53,7 +54,22 @@ void Processor::build_trace(const FragmentInput& frag_in,
         out.y.push_back(yi);
         out.z.push_back(zi);
         out.dE.push_back(frag_in.raw_trace[i]);
-        out.n_electrons.push_back(frag_in.raw_trace[i] / m_cfg.W);
+
+	//On calcule la fluctation statistique du nombre d'électron
+        double ne, n;
+	ne = frag_in.raw_trace[i] / m_cfg.W ;
+	if(ne<=0) {
+	  n=0 ;
+	}else if(ne>30) {
+          double sigma = sqrt(m_cfg.Fano * ne);
+	  n = std::max(0.0, std::round(ne + sigma* m_N01(m_rng))) ;
+	}else{
+          std::poisson_distribution<int> P(ne);
+	  n = static_cast<double>(P(m_rng)) ;
+        }
+
+	std::cout << ne << " " << n << std::endl ;
+	out.n_electrons.push_back(n) ;        
         out.sigma_T.push_back(m_cfg.sigma_T(zi));
         out.sigma_L.push_back(m_cfg.sigma_L(zi));
     }

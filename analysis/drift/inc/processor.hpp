@@ -21,7 +21,8 @@ public:
 private:
     DetectorConfig  m_cfg;
     std::mt19937_64 m_rng;  // propre à cette instance → safe OpenMP
-
+  std::normal_distribution<double> m_N01{0.0, 1.0} ;
+    
     // Tire un vertex uniforme dans le disque de rayon vertex_r_max
     // type1 : (va=vx, vb=vy), type2 : (va=vx, vb=vz)
     void draw_vertex(double& va, double& vb);
