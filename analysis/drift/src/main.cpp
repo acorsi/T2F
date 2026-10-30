@@ -26,7 +26,7 @@ std::vector<double> merge_trace(const std::vector<double>& raw, int n_merge) {
 int main(int argc, char* argv[]) {
     // Usage : process [N_event]
 
-    const std::string in_path  = "../../../../T2F_New/simulation_output/T2F_G4_40mu.h5";
+    const std::string in_path  = "../../../simulation_output/T2F_G4_40mu.h5";
     const std::string out_path = "../drift_output/drift_G4_40mu_merged.h5";
 
     // --- Lecture metadata ---

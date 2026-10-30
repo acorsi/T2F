@@ -29,6 +29,7 @@ struct DetectorConfig {
     double step_size    =  0.02;  // pas de la trace (cm)
 
     // --- Gaz / diffusion ---
+    double Fano     = 0.2;      // Facteur de Fano pour fluctuation du nombre d'électrons  
     double W        = 26.0e-6;  // énergie par paire e⁻/ion (MeV)
     double D_T      = 0.03;     // coefficient diffusion transverse   (cm/√cm)
     double D_L      = 0.015;    // coefficient diffusion longitudinale (cm/√cm)
