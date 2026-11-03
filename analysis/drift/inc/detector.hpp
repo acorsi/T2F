@@ -40,7 +40,15 @@ struct DetectorConfig {
     double ve_kg    = 0.0055;   // vitesse de dérive (cm/ns) cathode-grille 
     double ve_ga    = 0.002;    // vitesse de dérive (cm/ns) grille-anode
     double delta_t  = 10.0;     // pas temporel (ns)
-    double seuil_qt = 0.0;      // seuil Q(t) en n_electrons
+
+    // Seuils de lecture sur qt (électrons par bin), comme un déclenchement d'oscilloscope.
+    // Un bin est gardé si qt > seuil_qt_pos  OU  qt < seuil_qt_neg.
+    //   - les deux côtés : seuil_qt_pos = +200, seuil_qt_neg = -200 (défaut)
+    //   - seulement le lobe négatif : seuil_qt_pos = 1e300
+    //   - seulement le lobe positif : seuil_qt_neg = -1e300
+    // Convention de signe : la charge collectée sur un pad est positive.
+    double seuil_qt_pos =  200.0;
+    double seuil_qt_neg = -200.0;
 
     // --- Helpers ---
     double z_grid()  const { return dkg; }
@@ -52,7 +60,10 @@ struct DetectorConfig {
  
     double t_grid(double z) const { return drift_distance(z) / ve_kg; }
     double T_gap() const { return dga / ve_ga ; }
-    int n_bins() const { return static_cast<int>( std::ceil((2.0 * dkg / ve_kg + dga/ve_ga + 200.0) / delta_t)) + 1 ;}
+    // Nombre de bins de delta_t depuis la fission (t = 0). Le signal d'un voxel s'étend
+    // jusqu'à t_grid(z) + 402.5 ns (fin de la table PsiTable) ; on prend 450 ns de marge.
+    // Le plus grand t_grid est celui d'un voxel à la cathode : dkg / ve_kg.
+    int n_bins() const { return static_cast<int>( std::ceil((dkg / ve_kg + 450.0) / delta_t)) + 1 ;}
   
   double drift_distance(double z) const {
     return dkg - z;  // dérive vers z>0, z ∈ [0, dkg]

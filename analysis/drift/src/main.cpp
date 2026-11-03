@@ -24,7 +24,10 @@ std::vector<double> merge_trace(const std::vector<double>& raw, int n_merge) {
 }
 
 int main(int argc, char* argv[]) {
-    // Usage : process [N_event]
+    // Usage : process [N_event] [seuil_qt_pos] [seuil_qt_neg] [n_threads]
+    //   seuils en électrons par bin ; sans argument : valeurs de detector.hpp (+200 / -200).
+    //   Pour tout lire (contrôles de conservation) : ./process 200 0 0
+    //   n_threads : 14 par défaut ; 1 pour des tirages reproductibles d'une version à l'autre.
 
     const std::string in_path  = "../../../simulation_output/T2F_G4_40mu.h5";
     const std::string out_path = "../drift_output/drift_G4_40mu_merged.h5";
@@ -49,11 +52,15 @@ int main(int argc, char* argv[]) {
     // --- Configuration détecteur ---
     DetectorConfig cfg ;
     cfg.step_size = step_size_eff;
+    if (argc > 2) cfg.seuil_qt_pos = std::stod(argv[2]);
+    if (argc > 3) cfg.seuil_qt_neg = std::stod(argv[3]);
+    std::cout << "seuil_qt_pos      = " << cfg.seuil_qt_pos << " e-\n";
+    std::cout << "seuil_qt_neg      = " << cfg.seuil_qt_neg << " e-\n";
 
     // --- Plan de pads ---
     PadPlaneParams pParam ;
     
-    PadPlane plane = PadPlane(pParam);
+    PadPlane plane(pParam, cfg);   // construit aussi la table d'induction (~3 s, ~80 Mo)
 
     std::ofstream pad_file("my_pad.txt");
     pad_file << "# id x y r_in r_out\n";
@@ -83,10 +90,17 @@ int main(int argc, char* argv[]) {
     writer.write_attribute<double>("/metadata", "dga",           cfg.dga);
     writer.write_attribute<double>("/metadata", "vertex_r_max",  cfg.vertex_r_max);
     writer.write_attribute<double>("/metadata", "W",             cfg.W);
-    writer.write_attribute<double>("/metadata", "D_T",           cfg.D_T);
-    writer.write_attribute<double>("/metadata", "D_L",           cfg.D_L);
-    writer.write_attribute<double>("/metadata", "v_e",           cfg.v_e);
+    writer.write_attribute<double>("/metadata", "Fano",          cfg.Fano);
+    writer.write_attribute<double>("/metadata", "DT_kg",         cfg.DT_kg);
+    writer.write_attribute<double>("/metadata", "DT_ga",         cfg.DT_ga);
+    writer.write_attribute<double>("/metadata", "DL_kg",         cfg.DL_kg);
+    writer.write_attribute<double>("/metadata", "DL_ga",         cfg.DL_ga);
+    writer.write_attribute<double>("/metadata", "ve_kg",         cfg.ve_kg);
+    writer.write_attribute<double>("/metadata", "ve_ga",         cfg.ve_ga);
     writer.write_attribute<double>("/metadata", "delta_t",       cfg.delta_t);
+    writer.write_attribute<double>("/metadata", "seuil_qt_pos",  cfg.seuil_qt_pos);
+    writer.write_attribute<double>("/metadata", "seuil_qt_neg",  cfg.seuil_qt_neg);
+    writer.write_attribute<int>   ("/metadata", "n_bins",        cfg.n_bins());
 
     writer.write_attribute<double>("/metadata", "z_anode",     (cfg.dkg + cfg.dga));
     writer.write_attribute<double>("/metadata", "pad_size",    pParam.pad_size);
@@ -96,6 +110,7 @@ int main(int argc, char* argv[]) {
     writer.write_attribute<double>("/metadata", "r_transition",pParam.r_transition);
     writer.write_attribute<int>   ("/metadata", "n_rings",     pParam.n_rings);
     writer.write_attribute<double>("/metadata", "y_offset",    pParam.y_offset);
+    writer.write_attribute<double>("/metadata", "reach_pitch", pParam.reach_pitch);
 
     writer.write_attribute<int>("/metadata", "n_pads", (int)plane.pads().size());
 
@@ -114,13 +129,15 @@ int main(int argc, char* argv[]) {
         writer.add_vlen_dataset     (frag + "/pq");
         writer.add_vlen_dataset     (frag + "/pt");
         writer.add_vlen_dataset     (frag + "/pqt");
+        writer.add_vlen_dataset     (frag + "/pQ");
         writer.add_vlen_dataset     (frag + "/pnt");
         writer.add_vlen_dataset     (frag + "/pid");
     }
 
     // --- Boucle par chunks ---
     const hsize_t chunk_size = 20000;
-    const int     nthreads   = 14;
+    int           nthreads   = 14;
+    if (argc > 4) nthreads = std::max(1, std::stoi(argv[4]));
 
     std::cout << "\n\033[1;32m" << nthreads << " running threads...\033[0m\n\n";
 
@@ -154,10 +171,10 @@ int main(int argc, char* argv[]) {
 
         std::vector<std::vector<double>> H_x(count), H_y(count), H_z(count), H_dE(count);
         std::vector<std::vector<double>> H_px(count), H_py(count), H_pq(count);
-        std::vector<std::vector<double>> H_pt(count), H_pqt(count), H_pnt(count), H_pid(count);
+        std::vector<std::vector<double>> H_pt(count), H_pqt(count), H_pQ(count), H_pnt(count), H_pid(count);
         std::vector<std::vector<double>> L_x(count), L_y(count), L_z(count), L_dE(count);
         std::vector<std::vector<double>> L_px(count), L_py(count), L_pq(count);
-        std::vector<std::vector<double>> L_pt(count), L_pqt(count), L_pnt(count), L_pid(count);
+        std::vector<std::vector<double>> L_pt(count), L_pqt(count), L_pQ(count), L_pnt(count), L_pid(count);
 
         std::vector<std::vector<PadCharge>> H_pads(count), L_pads(count);
 
@@ -188,6 +205,7 @@ int main(int argc, char* argv[]) {
                 H_pnt[i].push_back((double)pc.t.size());
                 for (double t : pc.t)  H_pt[i].push_back(t);
                 for (double qt : pc.qt) H_pqt[i].push_back(qt);
+                for (double Qc : pc.Q)  H_pQ[i].push_back(Qc);
                 H_px[i].push_back(pc.x);
                 H_py[i].push_back(pc.y);
                 H_pq[i].push_back(pc.q);
@@ -207,6 +225,7 @@ int main(int argc, char* argv[]) {
                 L_pnt[i].push_back((double)pc.t.size());
                 for (double t : pc.t)  L_pt[i].push_back(t);
                 for (double qt : pc.qt) L_pqt[i].push_back(qt);
+                for (double Qc : pc.Q)  L_pQ[i].push_back(Qc);
                 L_px[i].push_back(pc.x);
                 L_py[i].push_back(pc.y);
                 L_pq[i].push_back(pc.q);
@@ -230,6 +249,7 @@ int main(int argc, char* argv[]) {
         writer.write_vlen_chunk    ("/H/pq",    H_pq,    start);
         writer.write_vlen_chunk    ("/H/pt",    H_pt,    start);
         writer.write_vlen_chunk    ("/H/pqt",   H_pqt,   start);
+        writer.write_vlen_chunk    ("/H/pQ",    H_pQ,    start);
         writer.write_vlen_chunk    ("/H/pnt",   H_pnt,   start);
         writer.write_vlen_chunk    ("/H/pid",   H_pid,   start);
 
@@ -247,6 +267,7 @@ int main(int argc, char* argv[]) {
         writer.write_vlen_chunk    ("/L/pq",    L_pq,    start);
         writer.write_vlen_chunk    ("/L/pt",    L_pt,    start);
         writer.write_vlen_chunk    ("/L/pqt",   L_pqt,   start);
+        writer.write_vlen_chunk    ("/L/pQ",    L_pQ,    start);
         writer.write_vlen_chunk    ("/L/pnt",   L_pnt,   start);
         writer.write_vlen_chunk    ("/L/pid",   L_pid,   start);
 

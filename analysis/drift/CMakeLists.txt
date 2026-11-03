@@ -14,6 +14,11 @@ endif()
 
 project(T2F_drift CXX)
 
+# Sans type de build, CMake ne met aucune optimisation : on force Release par défaut.
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Type de build" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -42,6 +47,9 @@ add_library(t2f_lib
     src/h5writer.cpp
     src/processor.cpp
     src/pad_geometry.cpp
+    src/weighting_potential.cpp
+    src/psi_builder.cpp
+    src/psi_table.cpp
 )
 target_link_libraries(t2f_lib
     ${HDF5_LIBRARIES}
@@ -51,3 +59,6 @@ target_link_libraries(t2f_lib
 # --- Exécutables ---
 add_executable(process src/main.cpp)
 target_link_libraries(process t2f_lib)
+# --- Test de l'induction (PadPlane::project) ---
+add_executable(test_project test/test_project.cpp)
+target_link_libraries(test_project t2f_lib)
