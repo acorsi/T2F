@@ -14,6 +14,7 @@ diag/
 results.pdf
 *~
 .#*
+*.tar.gz
 
 .DS_Store
 simulation/config.txt
