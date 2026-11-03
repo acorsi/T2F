@@ -1,0 +1,1 @@
+clang++ -O2 -std=c++11 -Wall -Wextra -o test_phi test_phi.cpp weighting_potential.cpp

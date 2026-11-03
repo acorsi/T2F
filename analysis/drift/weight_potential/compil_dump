@@ -1,0 +1,3 @@
+/usr/bin/clang++ -O3 -std=c++11 -o dump_film dump_film.cpp psi_table.cpp psi_builder.cpp weighting_potential.cpp
+./dump_film film.csv 0 0.4725      # voxel (x0, y0) en cm
+python3 plot_film.py film.csv film.gif

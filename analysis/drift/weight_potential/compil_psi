@@ -1,0 +1,2 @@
+clang++ -O2 -std=c++11 -Wall -Wextra -o test_psi test_psi.cpp psi_builder.cpp weighting_potential.cpp
+./test_psi
