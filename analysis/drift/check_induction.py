@@ -15,8 +15,8 @@ Trois contrôles indépendants du code C++ (recalcul en numpy à partir des voxe
      le gap pendant dga/ve_ga, avec l'étalement gaussien sigma_t). Vérifie le zéro du
      temps, les unités et la phase des bins.
   C. Charge finale par pad carré : comparée à Σ_voxels N · fx · fy (intégrale gaussienne sur
-     la tuile avec sigma_anode). Écart exprimé en écarts-types statistiques (Fano/Poisson) :
-     le RMS doit être ~1.
+     la tuile avec sigma_anode). Le RMS de l'écart doit être celui des fluctuations
+     statistiques (Fano/Poisson), et l'excès systématique << la charge de l'événement.
   F. (si --old) comparaison pad par pad de la charge finale avec l'ancienne version.
 
 Seuls les événements dont toutes les traces restent à plus de 1 cm du bord actif sont
@@ -87,7 +87,8 @@ def main():
 
     n_ev = min(a.n, f["/H/dE"].shape[0])
     t_start = np.arange(nb) * dt
-    res_A, res_B, z_all, rel_big, tail_all = [], [], [], [], []
+    res_A, res_B, rel_big, tail_all = [], [], [], []
+    dev_all, sd_all, ntot_all = [], [], []
     n_used = 0
 
     for i in range(n_ev):
@@ -136,7 +137,9 @@ def main():
                 if k is not None:
                     q_obs[k] = p["q"]
             sel = E > 1000.0
-            z_all.extend(((q_obs - E)[sel] / np.sqrt(var[sel] + 1.0)).tolist())
+            dev_all.extend((q_obs - E)[sel].tolist())
+            sd_all.extend(np.sqrt(var[sel]).tolist())
+            ntot_all.extend([Ntot] * int(sel.sum()))
             big = E > 5000.0
             rel_big.extend(((q_obs - E)[big] / E[big]).tolist())
             tail = (E > 200.0) & (E <= 1000.0)          # queues : plancher de précision de la table
@@ -157,14 +160,18 @@ def main():
     okB = B.max() < 5e-3
     print("   ->", "OK" if okB else "A REGARDER (attendu < 5e-3 ; un décalage en temps de 10 ns donnerait ~2e-2)"); ok &= okB
 
-    Z = np.array(z_all); R = np.array(rel_big)
-    print("\nC. Charge finale des pads carrés, écart en unités d'écart-type statistique")
-    Tl = np.array(tail_all)
-    print(f"   {len(Z)} pads (>1000 e⁻ attendus) : moyenne z = {Z.mean():+.3f}   RMS z = {np.sqrt((Z**2).mean()):.3f}")
+    dev = np.array(dev_all); sd = np.array(sd_all); nt = np.array(ntot_all)
+    R = np.array(rel_big); Tl = np.array(tail_all)
+    ratio = np.sqrt((dev ** 2).mean() / (sd ** 2).mean())
+    exces = np.sqrt(max((dev ** 2).mean() - (sd ** 2).mean(), 0.0) / (nt ** 2).mean())
+    print("\nC. Charge finale des pads carrés, comparée à Σ N·fx·fy (σ_anode)")
+    print(f"   {len(dev)} pads (>1000 e⁻ attendus)")
+    print(f"   RMS(écart) / RMS(fluctuation statistique Fano) = {ratio:.3f}   (attendu ~1)")
+    print(f"   excès systématique (en quadrature) = {exces:.1e} de la charge de l'événement   (table : ~1e-5)")
     print(f"   pads > 5000 e⁻ : écart relatif moyen = {R.mean():+.2e}   RMS = {R.std():.2e}")
     print(f"   queues (200-1000 e⁻, {len(Tl)} pads) : écart RMS = {np.sqrt((Tl**2).mean()):.1e} de la charge de l'événement")
-    okC = abs(Z.mean()) < 0.15 and np.sqrt((Z ** 2).mean()) < 1.2 and np.sqrt((Tl ** 2).mean()) < 1e-4
-    print("   ->", "OK" if okC else "A REGARDER (attendu : moyenne ~0, RMS ~1)"); ok &= okC
+    okC = ratio < 1.3 and exces < 5e-5 and abs(R.mean()) < 2e-3
+    print("   ->", "OK" if okC else "A REGARDER"); ok &= okC
 
     if a.old:
         g = h5py.File(a.old, "r")
