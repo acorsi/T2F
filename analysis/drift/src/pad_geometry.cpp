@@ -7,6 +7,9 @@ ProfStats g_prof[64];
 #include <algorithm>
 #include <iostream>
 
+static long g_n_beyond = 0;
+long pad_beyond_active_count() { return g_n_beyond; }
+
 namespace {
 
 inline double fast_erf(double x) {
@@ -189,7 +192,6 @@ void PadPlane::build_cells() {
             c.y = y;
             c.first = (int)m_contribs.size();
             c.count = 0;
-	    c.real = false ;
             
             if (cell_is_real(x, y, half_pad, r_quinc)) {
                 // pad réel : une seule contribution, de fraction 1
@@ -198,7 +200,6 @@ void PadPlane::build_cells() {
                 k.frac = 1.0;
                 m_contribs.push_back(k);
                 c.count = 1;
-		c.real = true ;
             } else {
                 // cellule virtuelle : on échantillonne NS x NS points de la tuile et on
                 // regarde dans quelle électrode tombe chaque point
@@ -268,7 +269,6 @@ std::vector<PadCharge> PadPlane::project(
     const int    n_pads   = (int)m_pads.size();
     const double tau_lo   = m_table.tau_min();
     const double tau_hi = m_table.tau_max();
-    const double eps = m_params.eps_cell;    
 
     if ((int)qt_buf.size() < n_pads)
         qt_buf.assign(n_pads, std::vector<double>(n_bins, 0.0));
@@ -354,15 +354,14 @@ std::vector<PadCharge> PadPlane::project(
         if (n_electrons[i] <= 0.0) continue;
 
         const double d = cfg.drift_distance(z[i]);
-	const int kd = m_table.d_cell(d);
         const double t_g = cfg.t_grid(z[i]);       // arrivée du centre du nuage à la grille
 
         // Avertissement hérité : voxel trop près du bord actif ou au-delà
         double r_voxel = std::sqrt(x[i]*x[i] + y[i]*y[i]);
         double frac_beyond = gaussian_cdf(-(m_params.r_active - r_voxel) / sigma_T[i]);
         if (frac_beyond > 1e-6) {
-            std::cout << "\033[31m[WARNING] charge beyond r_active: r=" << r_voxel
-                      << " sigma=" << sigma_T[i] << " frac=" << frac_beyond << "\033[0m\n";
+#pragma omp atomic
+	  g_n_beyond++;
         }
 
         // bins touchés par le signal de ce voxel : k0 .. k1-1
@@ -400,11 +399,6 @@ std::vector<PadCharge> PadPlane::project(
                 }
                 const Cell& cell = m_cells[ic];
                 double u = x[i] - cell.x;
-
-		if (eps > 0.0 && cell.real && n_electrons[i] * m_table.psi_max(u, v, kd) < eps) {
-		  PROF(S.n_skip++;)
-		    continue;
-		}
 
 		PROF(S.n_cell++;)
 		PROF(double a0 = omp_get_wtime();)

@@ -112,8 +112,8 @@ int main(int argc, char* argv[]) {
     writer.write_attribute<int>   ("/metadata", "n_rings",     pParam.n_rings);
     writer.write_attribute<double>("/metadata", "y_offset",    pParam.y_offset);
     writer.write_attribute<double>("/metadata", "reach_pitch", pParam.reach_pitch);
-    writer.write_attribute<double>("/metadata", "eps_cell", pParam.eps_cell);
     writer.write_attribute<double>("/metadata", "bound_margin", pParam.bound_margin);
+    writer.write_attribute<int>("/metadata", "n_tau", plane.table().n_tau());
     writer.write_attribute<int>("/metadata", "n_pads", (int)plane.pads().size());
 
     for (const std::string& frag : {"/H", "/L"}) {
@@ -301,7 +301,6 @@ int main(int argc, char* argv[]) {
         T.n_vox += S.n_vox;
         T.n_cell += S.n_cell;
         T.n_contrib += S.n_contrib;
-        T.n_skip += S.n_skip;
         T.sum_ne += S.sum_ne;
         T.n_skip_sel += S.n_skip_sel;
         T.n_cell_touched += S.n_cell_touched;
@@ -323,15 +322,17 @@ int main(int argc, char* argv[]) {
                 << "  contrib/cellule=" << (double)T.n_contrib / T.n_cell
                 << "\n"
                 << "µs par cellule : " << 1.0e6 * T.t_tot / T.n_cell << "\n"
-                << "cellules sautées/voxel=" << (double)T.n_skip / T.n_vox
                 << "  n_e moyen par voxel=" << T.sum_ne / T.n_vox
                 << "\n"
 		<< "paires sautées par la sélection : "
-		<< 100.0 * T.n_skip_sel / (T.n_cell + T.n_skip + T.n_skip_sel) << " % des paires\n"
+		<< 100.0 * T.n_skip_sel / (T.n_cell + T.n_skip_sel) << " % des paires\n"
 		<< "cellules gardées par la borne : " << 100.0*T.n_cell_keep/T.n_cell_touched << " % des cellules touchées\n";
           
     }
 #endif
+
+    std::cout << "voxels avec charge au-delà de r_active (frac > 1e-6) : "
+              << pad_beyond_active_count() << "\n";
     
     std::cout << "\nTerminé → " << out_path << "\n";
     return 0;

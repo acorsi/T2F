@@ -106,19 +106,6 @@ PsiTable::PsiTable(const TableParams& tp)
     }
 
     // carte des maxima : pour chaque noeud (k, i, j), max sur tau de |Psi|
-    m_pmax.assign((size_t)tp.n_d * tp.n_out * tp.n_out, 0.0f);
-    for (int k = 0; k < tp.n_d; ++k) {
-      for (int q = 0; q < tp.n_out * tp.n_out; ++q) {
-	const float* p = &m_data[(size_t)k * taille_d + (size_t)q * n_tau];
-	float mx = 0.0f;
-	for (int n = 0; n < n_tau; ++n) {
-	  float a = (p[n] < 0.0f) ? -p[n] : p[n];
-	  if (a > mx) mx = a;
-	}
-	m_pmax[(size_t)k * tp.n_out * tp.n_out + q] = mx;
-      }
-    }
-
     m_dmax.assign((size_t)tp.n_d * tp.n_out * tp.n_out, 0.0f);
     for (int k = 0; k < tp.n_d; ++k) {
       for (int q = 0; q < tp.n_out * tp.n_out; ++q) {
@@ -145,25 +132,6 @@ int PsiTable::d_cell(double d) const {
     return k;
 }
 
-double PsiTable::psi_max(double u, double v, int kd) const {
-    const int n_out = m_tp.n_out;
-    int i0 = (int)(std::fabs(u) / m_tp.step_out);
-    int j0 = (int)(std::fabs(v) / m_tp.step_out);
-    float m = 0.0f;
-    for (int kk = kd; kk <= kd + 1; ++kk) {
-        for (int a = 0; a <= 1; ++a) {
-            int i = i0 + a;
-            if (i >= n_out) continue;
-            for (int b = 0; b <= 1; ++b) {
-                int j = j0 + b;
-                if (j >= n_out) continue;
-                float w = m_pmax[((size_t)kk * n_out + i) * n_out + j];
-                if (w > m) m = w;
-            }
-        }
-    }
-    return m;
-}
 
 double PsiTable::dpsi_max(double u, double v, int kd) const {
     const int n_out = m_tp.n_out;

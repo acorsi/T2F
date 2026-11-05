@@ -51,7 +51,6 @@ struct PadPlaneParams {
 
   //Paramètres liés à l'induction - Ne pas changer sans connaissance.
     double reach_pitch  = 4.5;  // portée de l induction autour du voxel, en pitchs (<= 6.1)
-    double eps_cell     = 0.0;  // saut d'une cellule si n_e * max|Psi| < eps_cell (e-) ; 0 = rien sauté
     double bound_margin = 1.3;  // marge sur la borne de |qt| par cellule ; <= 0 : pas de sélection par le seuil de lecture
 };
 
@@ -103,7 +102,6 @@ private:
         double x, y;       // centre de la cellule (cm)
         int    first;      // indice de la première contribution dans m_contribs
         int count;         // nombre de contributions
-      bool real;           // vrai : pad réel de la zone quinconce (le saut epsilon s'applique aux pads vrais)
     };
 
     PadPlaneParams  m_params;
@@ -123,3 +121,5 @@ private:
     void build_cells();
     int  find_cell(int row, int col) const;
 };
+
+long pad_beyond_active_count() ;

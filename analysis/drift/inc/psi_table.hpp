@@ -71,7 +71,6 @@ public:
 
     // Saut des cellules négligeables (voir PadPlane::project)
     int    d_cell(double d) const;                     // noeud en d juste en dessous de d
-    double psi_max(double u, double v, int kd) const;  // majorant de max_tau |Psi|, par électron
     double dpsi_max(double u, double v, int kd) const;   // majorant de max_tau |Psi(tau+dtau) - Psi(tau)|
     
     // Bords de bins d'un voxel : nedges bords aux temps tau0 + j*step.
@@ -108,7 +107,6 @@ private:
     double m_c0;                 // DT_ga^2 g + plancher^2 : valeur de sigma_anode^2 en d = 0
     double m_x0, m_dx;           // x = ln(sigma_anode) : x du noeud 0 et pas entre noeuds
     std::vector<float> m_data; // [ ((k * n_out + i) * n_out + j) * n_tau + n ]
-    std::vector<float> m_pmax;    // [ (k * n_out + i) * n_out + j ] : max sur tau de |Psi| au noeud
     std::vector<float> m_dmax;
     
 };
