@@ -1,5 +1,9 @@
 #include "pad_geometry.hpp"
 #include <cmath>
+#include "prof.hpp"
+#ifdef T2F_PROF
+ProfStats g_prof[64];
+#endif
 #include <algorithm>
 #include <iostream>
 
@@ -185,7 +189,8 @@ void PadPlane::build_cells() {
             c.y = y;
             c.first = (int)m_contribs.size();
             c.count = 0;
-
+	    c.real = false ;
+            
             if (cell_is_real(x, y, half_pad, r_quinc)) {
                 // pad réel : une seule contribution, de fraction 1
                 Contrib k;
@@ -193,6 +198,7 @@ void PadPlane::build_cells() {
                 k.frac = 1.0;
                 m_contribs.push_back(k);
                 c.count = 1;
+		c.real = true ;
             } else {
                 // cellule virtuelle : on échantillonne NS x NS points de la tuile et on
                 // regarde dans quelle électrode tombe chaque point
@@ -261,7 +267,8 @@ std::vector<PadCharge> PadPlane::project(
     const int    n_bins   = cfg.n_bins();
     const int    n_pads   = (int)m_pads.size();
     const double tau_lo   = m_table.tau_min();
-    const double tau_hi   = m_table.tau_max();
+    const double tau_hi = m_table.tau_max();
+    const double eps = m_params.eps_cell;    
 
     if ((int)qt_buf.size() < n_pads)
         qt_buf.assign(n_pads, std::vector<double>(n_bins, 0.0));
@@ -269,15 +276,85 @@ std::vector<PadCharge> PadPlane::project(
     std::vector<char> touched(n_pads, 0);
     std::vector<int>  touched_list;
 
+    
+    PROF(double w0 = omp_get_wtime();)
+      PROF(ProfStats& S = g_prof[omp_get_thread_num() % 64];)
+      
     // tampons locaux (propres à cet appel, donc à ce thread)
-    std::vector<double> vec(m_table.n_tau());
+    const int n_tau = m_table.n_tau();
+    std::vector<float> vecbuf(n_tau + 2);
+    float* vec = &vecbuf[1];
+    std::vector<double> vecd(n_tau) ;
     std::vector<double> dq((size_t)((tau_hi - tau_lo) / delta_t) + 6);
+    std::vector<int>    eidx(dq.size() + 1);
+    std::vector<double> eout(dq.size() + 1);
+    double ew[4];
 
     const size_t N = x.size();
+
+    // --- Passe 1 : quelles cellules peuvent produire un bin au-dessus du seuil de lecture ? ---
+    double thr = cfg.seuil_qt_pos;
+    if (-cfg.seuil_qt_neg < thr) thr = -cfg.seuil_qt_neg;
+    const double margin = m_params.bound_margin;
+    const bool select = (margin > 0.0 && thr > 0.0);
+
+    std::vector<char> keepC;
+    std::vector<char> keepE;
+    if (select) {
+        keepC.assign(m_cells.size(), 0);
+        keepE.assign(n_pads, 0);
+        std::vector<double> bound_cell(m_cells.size(), 0.0);
+
+        for (size_t i = 0; i < N; ++i) {
+            if (n_electrons[i] <= 0.0) continue;
+            const int    kd1 = m_table.d_cell(cfg.drift_distance(z[i]));
+            const double w1  = n_electrons[i] * margin;
+            int kt1 = (int)std::floor((y[i] - m_reach) / p);
+            int kt2 = (int)std::floor((y[i] + m_reach) / p);
+            for (int kt = kt1; kt <= kt2; ++kt) {
+                int    row = (kt >= 0) ? kt + 1 : kt;
+                double v   = y[i] - (kt + 0.5) * p;
+                if (std::fabs(v) > m_reach) continue;
+                double x_offset = (row % 2 != 0) ? p / 2.0 : 0.0;
+                int c1 = (int)std::ceil ((x[i] - m_reach - x_offset) / p);
+                int c2 = (int)std::floor((x[i] + m_reach - x_offset) / p);
+                for (int col = c1; col <= c2; ++col) {
+                    int ic = find_cell(row, col);
+                    if (ic < 0) continue;
+                    bound_cell[ic] += w1 * m_table.dpsi_max(x[i] - m_cells[ic].x, v, kd1);
+                }
+            }
+        }
+
+        // borne par électrode : somme des bornes des cellules, pondérées par le recouvrement
+        std::vector<double> bound_elec(n_pads, 0.0);
+        for (size_t c = 0; c < m_cells.size(); ++c) {
+            if (bound_cell[c] <= 0.0) continue;
+            const Cell& cl = m_cells[c];
+            for (int k = 0; k < cl.count; ++k) {
+                const Contrib& ct = m_contribs[cl.first + k];
+                bound_elec[ct.pad] += ct.frac * bound_cell[c];
+            }
+        }
+        for (int e = 0; e < n_pads; ++e) keepE[e] = (bound_elec[e] > thr) ? 1 : 0;
+
+        // une cellule est gardée si une de ses électrodes l'est
+        for (size_t c = 0; c < m_cells.size(); ++c) {
+            if (bound_cell[c] <= 0.0) continue;
+            PROF(S.n_cell_touched++;)
+            const Cell& cl = m_cells[c];
+            for (int k = 0; k < cl.count; ++k) {
+                if (keepE[m_contribs[cl.first + k].pad]) { keepC[c] = 1; break; }
+            }
+            PROF(if (keepC[c]) S.n_cell_keep++;)
+        }
+    }    
+    
     for (size_t i = 0; i < N; ++i) {
         if (n_electrons[i] <= 0.0) continue;
 
-        const double d   = cfg.drift_distance(z[i]);
+        const double d = cfg.drift_distance(z[i]);
+	const int kd = m_table.d_cell(d);
         const double t_g = cfg.t_grid(z[i]);       // arrivée du centre du nuage à la grille
 
         // Avertissement hérité : voxel trop près du bord actif ou au-delà
@@ -295,8 +372,14 @@ std::vector<PadCharge> PadPlane::project(
         if (k1 > n_bins) k1 = n_bins;
         int nb = k1 - k0;
         if (nb <= 0) continue;
-        if (nb > (int)dq.size()) nb = (int)dq.size();
+        if (nb > (int)dq.size())
+          nb = (int)dq.size();
 
+	const bool fast = m_table.edges_prepare(k0 * delta_t - t_g, delta_t, nb + 1, &eidx[0], ew);
+
+	PROF(S.n_vox++;)
+	  PROF(S.sum_ne += n_electrons[i];)
+          
         // cellules à portée du voxel : tuiles de rang kt (y dans [kt p, (kt+1) p])
         int kt_min = (int)std::floor((y[i] - m_reach) / p);
         int kt_max = (int)std::floor((y[i] + m_reach) / p);
@@ -311,30 +394,54 @@ std::vector<PadCharge> PadPlane::project(
             for (int col = col_min; col <= col_max; ++col) {
                 int ic = find_cell(row, col);
                 if (ic < 0) continue;
+		if (select && !keepC[ic]) {
+		  PROF(S.n_skip_sel++;)
+                    continue;
+                }
                 const Cell& cell = m_cells[ic];
                 double u = x[i] - cell.x;
 
-                m_table.psi_vector(u, v, d, &vec[0]);
+		if (eps > 0.0 && cell.real && n_electrons[i] * m_table.psi_max(u, v, kd) < eps) {
+		  PROF(S.n_skip++;)
+		    continue;
+		}
 
-                // charge induite sur la cellule pendant chaque bin, aux bords de bins
-                double prev = m_table.psi_at(&vec[0], k0 * delta_t - t_g);
-                for (int j = 0; j < nb; ++j) {
-                    double next = m_table.psi_at(&vec[0], (k0 + j + 1) * delta_t - t_g);
-                    dq[j] = n_electrons[i] * (next - prev);
-                    prev = next;
-                }
+		PROF(S.n_cell++;)
+		PROF(double a0 = omp_get_wtime();)
+		m_table.psi_vector_f(u, v, d, vec);
+		vecbuf[0]         = vec[0];
+		vecbuf[n_tau + 1] = vec[n_tau - 1];
+		PROF(double a1 = omp_get_wtime(); S.t_vec += a1 - a0;)
 
+		if (fast) {
+		    m_table.edges_values_f(&vecbuf[0], &eidx[0], ew, nb + 1, &eout[0]);
+		    for (int j = 0; j < nb; ++j) dq[j] = n_electrons[i] * (eout[j + 1] - eout[j]);
+		} else {
+		    for (int n = 0; n < n_tau; ++n) vecd[n] = vec[n];
+		    double prev = m_table.psi_at(&vecd[0], k0 * delta_t - t_g);
+		    for (int j = 0; j < nb; ++j) {
+		        double next = m_table.psi_at(&vecd[0], (k0 + j + 1) * delta_t - t_g);
+		        dq[j] = n_electrons[i] * (next - prev);
+		        prev = next;
+		    }
+		}
+		PROF(double a2 = omp_get_wtime(); S.t_at += a2 - a1;)
+                                
                 // répartition sur les électrodes (1 pour un pad réel, plusieurs sinon)
                 for (int c = 0; c < cell.count; ++c) {
                     const Contrib& ct = m_contribs[cell.first + c];
+		    if (select && !keepE[ct.pad]) continue;
                     if (!touched[ct.pad]) { touched[ct.pad] = 1; touched_list.push_back(ct.pad); }
                     double* buf = &qt_buf[ct.pad][k0];
                     for (int j = 0; j < nb; ++j) buf[j] += ct.frac * dq[j];
                 }
+		PROF(double a3 = omp_get_wtime(); S.t_acc += a3 - a2; S.n_contrib += cell.count;)
+                
             }
         }
     }
 
+    PROF(double w1 = omp_get_wtime();)
     // --- lecture : seuils signés, charge cumulée ---
     std::vector<PadCharge> result;
     result.reserve(touched_list.size());
@@ -359,5 +466,8 @@ std::vector<PadCharge> PadPlane::project(
         pc.q = Q;
         if (!pc.t.empty()) result.push_back(pc);     // un pad sans bin au-dessus du seuil n'est pas lu
     }
+
+    PROF(double w2 = omp_get_wtime(); S.t_out += w2 - w1; S.t_tot += w2 - w0;)
+
     return result;
 }

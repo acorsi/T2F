@@ -62,3 +62,5 @@ target_link_libraries(process t2f_lib)
 # --- Test de l'induction (PadPlane::project) ---
 add_executable(test_project test/test_project.cpp)
 target_link_libraries(test_project t2f_lib)
+add_executable(test_nh test/test_nh.cpp)
+target_link_libraries(test_nh t2f_lib)

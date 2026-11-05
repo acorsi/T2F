@@ -30,7 +30,7 @@ TableParams default_table_params(const DetectorConfig& cfg, double pitch) {
     tp.n_d      = 10;
     tp.n_out    = 100;
     tp.step_out = pitch / 16.0;
-    tp.n_h      = 100;
+    tp.n_h      = 25;
     tp.tau_max_ns = 400.0;
     tp.n_img    = 10;
     tp.m_cells  = 8;
@@ -104,6 +104,84 @@ PsiTable::PsiTable(const TableParams& tp)
         float* dest = &m_data[(size_t)k * taille_d];
         for (size_t q = 0; q < taille_d; ++q) dest[q] = (float)psi[q];
     }
+
+    // carte des maxima : pour chaque noeud (k, i, j), max sur tau de |Psi|
+    m_pmax.assign((size_t)tp.n_d * tp.n_out * tp.n_out, 0.0f);
+    for (int k = 0; k < tp.n_d; ++k) {
+      for (int q = 0; q < tp.n_out * tp.n_out; ++q) {
+	const float* p = &m_data[(size_t)k * taille_d + (size_t)q * n_tau];
+	float mx = 0.0f;
+	for (int n = 0; n < n_tau; ++n) {
+	  float a = (p[n] < 0.0f) ? -p[n] : p[n];
+	  if (a > mx) mx = a;
+	}
+	m_pmax[(size_t)k * tp.n_out * tp.n_out + q] = mx;
+      }
+    }
+
+    m_dmax.assign((size_t)tp.n_d * tp.n_out * tp.n_out, 0.0f);
+    for (int k = 0; k < tp.n_d; ++k) {
+      for (int q = 0; q < tp.n_out * tp.n_out; ++q) {
+	const float* p = &m_data[(size_t)k * taille_d + (size_t)q * n_tau];
+	float mx = 0.0f;
+	for (int n = 0; n + 1 < n_tau; ++n) {
+	  float a = p[n + 1] - p[n];
+	  if (a < 0.0f) a = -a;
+	  if (a > mx) mx = a;
+	}
+	m_dmax[(size_t)k * tp.n_out * tp.n_out + q] = mx;
+      }
+    }
+    
+}
+
+int PsiTable::d_cell(double d) const {
+    if (d < 0.0) d = 0.0;
+    if (d > m_tp.d_max) d = m_tp.d_max;
+    double xs = (0.5 * std::log(m_tp.DT_kg * m_tp.DT_kg * d + m_c0) - m_x0) / m_dx;
+    int k = (int)xs;
+    if (k < 0) k = 0;
+    if (k > m_tp.n_d - 2) k = m_tp.n_d - 2;
+    return k;
+}
+
+double PsiTable::psi_max(double u, double v, int kd) const {
+    const int n_out = m_tp.n_out;
+    int i0 = (int)(std::fabs(u) / m_tp.step_out);
+    int j0 = (int)(std::fabs(v) / m_tp.step_out);
+    float m = 0.0f;
+    for (int kk = kd; kk <= kd + 1; ++kk) {
+        for (int a = 0; a <= 1; ++a) {
+            int i = i0 + a;
+            if (i >= n_out) continue;
+            for (int b = 0; b <= 1; ++b) {
+                int j = j0 + b;
+                if (j >= n_out) continue;
+                float w = m_pmax[((size_t)kk * n_out + i) * n_out + j];
+                if (w > m) m = w;
+            }
+        }
+    }
+    return m;
+}
+
+double PsiTable::dpsi_max(double u, double v, int kd) const {
+    const int n_out = m_tp.n_out;
+    int i0 = (int)(std::fabs(u) / m_tp.step_out);
+    int j0 = (int)(std::fabs(v) / m_tp.step_out);
+    float m = 0.0f;
+    for (int kk = kd; kk <= kd + 1; ++kk)
+        for (int a = 0; a <= 1; ++a) {
+            int i = i0 + a;
+            if (i >= n_out) continue;
+            for (int b = 0; b <= 1; ++b) {
+                int j = j0 + b;
+                if (j >= n_out) continue;
+                float w = m_dmax[((size_t)kk * n_out + i) * n_out + j];
+                if (w > m) m = w;
+            }
+        }
+    return m;
 }
 
 void PsiTable::psi_vector(double u, double v, double d, double* out) const {
@@ -171,4 +249,115 @@ double PsiTable::psi_at(const double* vec, double tau) const {
         s += w[a] * vec[n];
     }
     return s;
+}
+
+
+bool PsiTable::edges_prepare(double tau0, double step, int nedges, int* idx, double* w) const {
+    double ratio = step / m_dtau;
+    int R = (int)(ratio + 0.5);
+    if (R < 1 || std::fabs(ratio - R) > 1.0e-9) return false;
+    const int n_tau = m_max - m_min + 1;
+    double x0 = tau0 / m_dtau - m_min;
+    double fl = std::floor(x0);
+    double f  = x0 - fl;
+    lagrange4(f, w);
+    for (int j = 0; j < nedges; ++j) {
+        double xi = fl + (double)(j * R);      // partie entière de la position du bord j
+        double x  = xi + f;
+        if (x <= 0.0)              idx[j] = -1;
+        else if (x >= n_tau - 1)   idx[j] = -2;
+        else                       idx[j] = (int)xi;
+    }
+    return true;
+}
+
+void PsiTable::edges_values(const double* p, const int* idx, const double* w,
+                            int nedges, double* out) const {
+    const int n_tau = m_max - m_min + 1;
+    const double w0 = w[0], w1 = w[1], w2 = w[2], w3 = w[3];
+    for (int j = 0; j < nedges; ++j) {
+        int n = idx[j];
+        if (n >= 0)        out[j] = w0 * p[n] + w1 * p[n + 1] + w2 * p[n + 2] + w3 * p[n + 3];
+        else if (n == -1)  out[j] = p[1];          // vec[0]
+        else               out[j] = p[n_tau];      // vec[n_tau - 1]
+    }
+}
+
+void PsiTable::psi_vector_f(double u, double v, double d, float* out) const {
+    const int n_tau = m_max - m_min + 1;
+    const int n_out = m_tp.n_out;
+
+    if (d < 0.0) d = 0.0;
+    if (d > m_tp.d_max) d = m_tp.d_max;
+    double xs = (0.5 * std::log(m_tp.DT_kg * m_tp.DT_kg * d + m_c0) - m_x0) / m_dx;
+    int nd = m_tp.n_d;
+    int kb = (int)xs;
+    if (kb < 1) kb = 1;
+    if (kb > nd - 3) kb = nd - 3;
+    double wd[4];
+    lagrange4(xs - kb, wd);
+
+    double xu = std::fabs(u) / m_tp.step_out;
+    double xv = std::fabs(v) / m_tp.step_out;
+    int i0 = (int)xu;
+    int j0 = (int)xv;
+    if (i0 >= n_out || j0 >= n_out) {
+        for (int n = 0; n < n_tau; ++n) out[n] = 0.0f;
+        return;
+    }
+    double wu[4], wv[4];
+    lagrange4(xu - i0, wu);
+    lagrange4(xv - j0, wv);
+
+    const size_t taille_d = (size_t)n_out * n_out * n_tau;
+
+    // liste des flux (pointeur, poids)
+    const float* ptr[64];
+    float        wgt[64];
+    int ns = 0;
+    for (int kk = 0; kk < 4; ++kk) {
+        const float* base = &m_data[(size_t)(kb - 1 + kk) * taille_d];
+        for (int ia = 0; ia < 4; ++ia) {
+            int i = i0 - 1 + ia;
+            if (i < 0) i = -i;
+            if (i >= n_out) continue;
+            for (int jb = 0; jb < 4; ++jb) {
+                int j = j0 - 1 + jb;
+                if (j < 0) j = -j;
+                if (j >= n_out) continue;
+                ptr[ns] = base + ((size_t)i * n_out + j) * n_tau;
+                wgt[ns] = (float)(wd[kk] * wu[ia] * wv[jb]);
+                ++ns;
+            }
+        }
+    }
+
+    // accumulation par blocs de 8 valeurs, gardées en registres
+    const int B = 8;
+    int n = 0;
+    while (n < n_tau) {
+        if (n + B > n_tau) n = n_tau - B;          // dernier bloc décalé (recouvrement)
+        float acc[B];
+        for (int q = 0; q < B; ++q) acc[q] = 0.0f;
+        for (int s = 0; s < ns; ++s) {
+            const float* p = ptr[s] + n;
+            const float  w = wgt[s];
+            for (int q = 0; q < B; ++q) acc[q] += w * p[q];
+        }
+        for (int q = 0; q < B; ++q) out[n + q] = acc[q];
+        if (n + B >= n_tau) break;
+        n += B;
+    }
+}
+
+void PsiTable::edges_values_f(const float* p, const int* idx, const double* w,
+                              int nedges, double* out) const {
+    const int n_tau = m_max - m_min + 1;
+    const double w0 = w[0], w1 = w[1], w2 = w[2], w3 = w[3];
+    for (int j = 0; j < nedges; ++j) {
+        int n = idx[j];
+        if (n >= 0)        out[j] = w0 * p[n] + w1 * p[n + 1] + w2 * p[n + 2] + w3 * p[n + 3];
+        else if (n == -1)  out[j] = p[1];
+        else               out[j] = p[n_tau];
+    }
 }

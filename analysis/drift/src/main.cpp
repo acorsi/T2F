@@ -3,6 +3,7 @@
 #include "detector.hpp"
 #include "processor.hpp"
 #include "pad_geometry.hpp"
+#include "prof.hpp"
 
 #include <iostream>
 #include <fstream>
@@ -111,7 +112,8 @@ int main(int argc, char* argv[]) {
     writer.write_attribute<int>   ("/metadata", "n_rings",     pParam.n_rings);
     writer.write_attribute<double>("/metadata", "y_offset",    pParam.y_offset);
     writer.write_attribute<double>("/metadata", "reach_pitch", pParam.reach_pitch);
-
+    writer.write_attribute<double>("/metadata", "eps_cell", pParam.eps_cell);
+    writer.write_attribute<double>("/metadata", "bound_margin", pParam.bound_margin);
     writer.write_attribute<int>("/metadata", "n_pads", (int)plane.pads().size());
 
     for (const std::string& frag : {"/H", "/L"}) {
@@ -284,6 +286,53 @@ int main(int argc, char* argv[]) {
                   << "(" << start + count << "/" << N << ")\n";
     }
 
+
+#ifdef T2F_PROF
+    {
+      ProfStats T = ProfStats();
+      std::cout << "\n--- PROFIL (s cumulées sur les threads) ---\n";
+      for (int k = 0; k < 64; ++k) {
+	const ProfStats& S = g_prof[k];
+	if (S.n_vox == 0) continue;
+	std::cout << "thread " << k << " : tot=" << S.t_tot
+		  << " vox=" << S.n_vox << " cell=" << S.n_cell << "\n";
+	T.t_tot += S.t_tot; T.t_vec += S.t_vec; T.t_at += S.t_at;
+	T.t_acc += S.t_acc; T.t_out += S.t_out;
+        T.n_vox += S.n_vox;
+        T.n_cell += S.n_cell;
+        T.n_contrib += S.n_contrib;
+        T.n_skip += S.n_skip;
+        T.sum_ne += S.sum_ne;
+        T.n_skip_sel += S.n_skip_sel;
+        T.n_cell_touched += S.n_cell_touched;
+        T.n_cell_keep += S.n_cell_keep;
+        
+      }
+      std::cout << "psi_vector : " << T.t_vec << "  ("
+                << 100.0 * T.t_vec / T.t_tot << " %)\n"
+                << "psi_at     : " << T.t_at << "  ("
+                << 100.0 * T.t_at / T.t_tot << " %)\n"
+                << "accumul.   : " << T.t_acc << "  ("
+                << 100.0 * T.t_acc / T.t_tot << " %)\n"
+                << "lecture    : " << T.t_out << "  ("
+                << 100.0 * T.t_out / T.t_tot << " %)\n"
+                << "reste      : "
+                << T.t_tot - T.t_vec - T.t_at - T.t_acc - T.t_out << "\n"
+                << "voxels=" << T.n_vox
+                << "  cellules/voxel=" << (double)T.n_cell / T.n_vox
+                << "  contrib/cellule=" << (double)T.n_contrib / T.n_cell
+                << "\n"
+                << "µs par cellule : " << 1.0e6 * T.t_tot / T.n_cell << "\n"
+                << "cellules sautées/voxel=" << (double)T.n_skip / T.n_vox
+                << "  n_e moyen par voxel=" << T.sum_ne / T.n_vox
+                << "\n"
+		<< "paires sautées par la sélection : "
+		<< 100.0 * T.n_skip_sel / (T.n_cell + T.n_skip + T.n_skip_sel) << " % des paires\n"
+		<< "cellules gardées par la borne : " << 100.0*T.n_cell_keep/T.n_cell_touched << " % des cellules touchées\n";
+          
+    }
+#endif
+    
     std::cout << "\nTerminé → " << out_path << "\n";
     return 0;
 }

@@ -40,14 +40,19 @@ struct PadCharge {
 // ---------------------------------------------------------------------------
 
 struct PadPlaneParams {
-    double pad_size     = 0.3;    // côté des pads cartésiens (cm)
-    double inter_pad    = 0.015;  // inter-pad (cm)
-    double r_quinconce  = 8.1;    // rayon coins < r → pad central (cm)
+  //Paramètres de géométrie du plan de pad
+    double pad_size     = 0.3;   // côté des pads cartésiens (cm)
+    double inter_pad    = 0.015; // inter-pad (cm)
+    double r_quinconce  = 8.1;   // rayon coins < r → pad central (cm)
     double r_transition = 8.2;   // séparation transition/anneaux (cm)
-    double r_active     = 10.0;   // rayon externe (cm)
+    double r_active     = 10.0;  // rayon externe (cm)
     int    n_rings      = 6;     // nombre de demi-anneaux périphériques
     double y_offset     = 0.0;   // doit rester 0 : la table suppose des tuiles jointives en y = 0
-    double reach_pitch  = 4.5;   // portée de l induction autour du voxel, en pitchs (<= 6.1)
+
+  //Paramètres liés à l'induction - Ne pas changer sans connaissance.
+    double reach_pitch  = 4.5;  // portée de l induction autour du voxel, en pitchs (<= 6.1)
+    double eps_cell     = 0.0;  // saut d'une cellule si n_e * max|Psi| < eps_cell (e-) ; 0 = rien sauté
+    double bound_margin = 1.3;  // marge sur la borne de |qt| par cellule ; <= 0 : pas de sélection par le seuil de lecture
 };
 
 // ---------------------------------------------------------------------------
@@ -97,7 +102,8 @@ private:
     struct Cell {
         double x, y;       // centre de la cellule (cm)
         int    first;      // indice de la première contribution dans m_contribs
-        int    count;      // nombre de contributions
+        int count;         // nombre de contributions
+      bool real;           // vrai : pad réel de la zone quinconce (le saut epsilon s'applique aux pads vrais)
     };
 
     PadPlaneParams  m_params;

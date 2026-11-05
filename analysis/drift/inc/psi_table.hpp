@@ -69,6 +69,27 @@ public:
     // de diffusion du gap. d_node(k) donne la distance d du noeud k (d_node(0) = 0).
     double d_node(int k) const;
 
+    // Saut des cellules négligeables (voir PadPlane::project)
+    int    d_cell(double d) const;                     // noeud en d juste en dessous de d
+    double psi_max(double u, double v, int kd) const;  // majorant de max_tau |Psi|, par électron
+    double dpsi_max(double u, double v, int kd) const;   // majorant de max_tau |Psi(tau+dtau) - Psi(tau)|
+    
+    // Bords de bins d'un voxel : nedges bords aux temps tau0 + j*step.
+    // Renvoie false si step n'est pas un multiple entier du pas de la table.
+    // Sinon remplit idx[j] (-1 : avant la plage, -2 : après, sinon indice de noeud)
+    // et w[0..3], poids de Lagrange communs à tous les bords.
+    bool edges_prepare(double tau0, double step, int nedges, int* idx, double* w) const;
+
+    // Valeurs aux bords. p pointe sur un vecteur "rembourré" de taille n_tau()+2 :
+    // p[1+n] = Psi(tau_n), p[0] = p[1], p[n_tau()+1] = p[n_tau()].
+    void edges_values(const double* p, const int* idx, const double* w,
+                      int nedges, double* out) const;
+
+    // Versions en float (voir pad_geometry.cpp) : même résultat à ~1e-6 près sur Psi.
+    void psi_vector_f(double u, double v, double d, float* out) const;
+    void edges_values_f(const float* p, const int* idx, const double* w,
+                        int nedges, double* out) const; 
+  
     // --- lecture ---
     // Remplit out[0 .. n_tau()-1] avec Psi aux noeuds en tau (tau_n = (m_min+n)*dtau),
     // pour le décalage (u,v) et la distance d.
@@ -86,5 +107,8 @@ private:
     int    m_min, m_max;
     double m_c0;                 // DT_ga^2 g + plancher^2 : valeur de sigma_anode^2 en d = 0
     double m_x0, m_dx;           // x = ln(sigma_anode) : x du noeud 0 et pas entre noeuds
-    std::vector<float> m_data;   // [ ((k * n_out + i) * n_out + j) * n_tau + n ]
+    std::vector<float> m_data; // [ ((k * n_out + i) * n_out + j) * n_tau + n ]
+    std::vector<float> m_pmax;    // [ (k * n_out + i) * n_out + j ] : max sur tau de |Psi| au noeud
+    std::vector<float> m_dmax;
+    
 };
