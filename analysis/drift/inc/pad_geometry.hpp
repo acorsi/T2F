@@ -123,3 +123,5 @@ private:
 };
 
 long pad_beyond_active_count() ;
+long pad_traces_beyond_count();   // fragments avec au moins un voxel au-delà de r_active
+long pad_traces_count();          // fragments traités

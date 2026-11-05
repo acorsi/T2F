@@ -8,7 +8,11 @@ ProfStats g_prof[64];
 #include <iostream>
 
 static long g_n_beyond = 0;
+static long g_n_traces_beyond = 0;
+static long g_n_traces = 0;
 long pad_beyond_active_count() { return g_n_beyond; }
+long pad_traces_beyond_count() { return g_n_traces_beyond; }
+long pad_traces_count() { return g_n_traces; }
 
 namespace {
 
@@ -348,8 +352,9 @@ std::vector<PadCharge> PadPlane::project(
             }
             PROF(if (keepC[c]) S.n_cell_keep++;)
         }
-    }    
-    
+    }
+
+    bool trace_beyond = false;
     for (size_t i = 0; i < N; ++i) {
         if (n_electrons[i] <= 0.0) continue;
 
@@ -360,6 +365,7 @@ std::vector<PadCharge> PadPlane::project(
         double r_voxel = std::sqrt(x[i]*x[i] + y[i]*y[i]);
         double frac_beyond = gaussian_cdf(-(m_params.r_active - r_voxel) / sigma_T[i]);
         if (frac_beyond > 1e-6) {
+	  trace_beyond = true;          
 #pragma omp atomic
 	  g_n_beyond++;
         }
@@ -434,6 +440,13 @@ std::vector<PadCharge> PadPlane::project(
             }
         }
     }
+
+#pragma omp atomic
+    g_n_traces++;
+    if (trace_beyond) {
+#pragma omp atomic
+        g_n_traces_beyond++;
+    }    
 
     PROF(double w1 = omp_get_wtime();)
     // --- lecture : seuils signés, charge cumulée ---

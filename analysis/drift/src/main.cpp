@@ -5,12 +5,14 @@
 #include "pad_geometry.hpp"
 #include "prof.hpp"
 
+#include <cstdint>
 #include <iostream>
 #include <fstream>
 #include <numeric>
 #include <chrono>
 #include <omp.h>
 #include <ctime>
+#include <map>
 
 std::vector<double> merge_trace(const std::vector<double>& raw, int n_merge) {
     if (n_merge <= 1) return raw;
@@ -24,6 +26,34 @@ std::vector<double> merge_trace(const std::vector<double>& raw, int n_merge) {
     return merged;
 }
 
+static uint64_t mix_seed(uint64_t base, uint64_t idx) {
+    uint64_t z = base + 0x9E3779B97F4A7C15ULL * (idx + 1);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+static std::map<std::string, double> g_wt;
+
+static void timed_vlen(H5Writer& w, const std::string& name,
+                       const std::vector<std::vector<double> >& d, hsize_t start) {
+    double t0 = omp_get_wtime();
+    w.write_vlen_chunk(name, d, start);
+    g_wt[name] += omp_get_wtime() - t0;
+}
+
+static std::vector<float> to_float(const std::vector<double>& v) {
+    return std::vector<float>(v.begin(), v.end());
+}
+
+template<typename T>
+static void timed_vlen(H5Writer& w, const std::string& name,
+                       const std::vector<std::vector<T> >& d, hsize_t start) {
+    double t0 = omp_get_wtime();
+    w.write_vlen_chunk<T>(name, d, start);
+    g_wt[name] += omp_get_wtime() - t0;
+}
+
 int main(int argc, char* argv[]) {
     // Usage : process [N_event] [seuil_qt_pos] [seuil_qt_neg] [n_threads]
     //   seuils en électrons par bin ; sans argument : valeurs de detector.hpp (+200 / -200).
@@ -33,6 +63,9 @@ int main(int argc, char* argv[]) {
     const std::string in_path  = "../../../simulation_output/T2F_G4_40mu.h5";
     const std::string out_path = "../drift_output/drift_G4_40mu_merged.h5";
 
+    //Mesure du temps cpu
+    double wall0 = omp_get_wtime();
+    
     // --- Lecture metadata ---
     H5Reader reader(in_path);
     const hsize_t N_total = reader.size("/H/KE");
@@ -117,28 +150,28 @@ int main(int argc, char* argv[]) {
     writer.write_attribute<int>("/metadata", "n_pads", (int)plane.pads().size());
 
     for (const std::string& frag : {"/H", "/L"}) {
-        writer.add_dataset<double>  (frag + "/theta");
-        writer.add_dataset<double>  (frag + "/phi");
-        writer.add_dataset<double>  (frag + "/vx");
-        writer.add_dataset<double>  (frag + "/vy");
-        writer.add_dataset<double>  (frag + "/vz");
-        writer.add_vlen_dataset     (frag + "/x");
-        writer.add_vlen_dataset     (frag + "/y");
-        writer.add_vlen_dataset     (frag + "/z");
-        writer.add_vlen_dataset     (frag + "/dE");
-        writer.add_vlen_dataset     (frag + "/px");
-        writer.add_vlen_dataset     (frag + "/py");
-        writer.add_vlen_dataset     (frag + "/pq");
-        writer.add_vlen_dataset     (frag + "/pt");
-        writer.add_vlen_dataset     (frag + "/pqt");
-        writer.add_vlen_dataset     (frag + "/pQ");
-        writer.add_vlen_dataset     (frag + "/pnt");
-        writer.add_vlen_dataset     (frag + "/pid");
+        writer.add_dataset<float>     (frag + "/theta");
+        writer.add_dataset<float>     (frag + "/phi");
+        writer.add_dataset<float>     (frag + "/vx");
+        writer.add_dataset<float>     (frag + "/vy");
+        writer.add_dataset<float>     (frag + "/vz");
+        writer.add_vlen_dataset<float>(frag + "/x");
+        writer.add_vlen_dataset<float>(frag + "/y");
+        writer.add_vlen_dataset<float>(frag + "/z");
+        writer.add_vlen_dataset<float>(frag + "/dE");
+        writer.add_vlen_dataset<float>(frag + "/px");
+        writer.add_vlen_dataset<float>(frag + "/py");
+        writer.add_vlen_dataset<float>(frag + "/pq");
+        writer.add_vlen_dataset<float>(frag + "/pt");        
+        writer.add_vlen_dataset<float>(frag + "/pqt");        
+        writer.add_vlen_dataset<float>(frag + "/pnt");        
+        writer.add_vlen_dataset<float>(frag + "/pid");
+	//        writer.add_vlen_dataset<float>     (frag + "/pQ");        
     }
 
     // --- Boucle par chunks ---
     const hsize_t chunk_size = 20000;
-    int           nthreads   = 14;
+    int           nthreads   = 8;
     if (argc > 4) nthreads = std::max(1, std::stoi(argv[4]));
 
     std::cout << "\n\033[1;32m" << nthreads << " running threads...\033[0m\n\n";
@@ -166,23 +199,26 @@ int main(int argc, char* argv[]) {
 
         auto t1 = std::chrono::steady_clock::now();
 
-        std::vector<double> H_theta(count), H_phi(count);
-        std::vector<double> H_vx(count), H_vy(count), H_vz(count);
-        std::vector<double> L_theta(count), L_phi(count);
-        std::vector<double> L_vx(count), L_vy(count), L_vz(count);
+        std::vector<float> H_theta(count), H_phi(count);
+        std::vector<float> H_vx(count), H_vy(count), H_vz(count);
+        std::vector<float> L_theta(count), L_phi(count);
+        std::vector<float> L_vx(count), L_vy(count), L_vz(count);
 
-        std::vector<std::vector<double>> H_x(count), H_y(count), H_z(count), H_dE(count);
-        std::vector<std::vector<double>> H_px(count), H_py(count), H_pq(count);
-        std::vector<std::vector<double>> H_pt(count), H_pqt(count), H_pQ(count), H_pnt(count), H_pid(count);
-        std::vector<std::vector<double>> L_x(count), L_y(count), L_z(count), L_dE(count);
-        std::vector<std::vector<double>> L_px(count), L_py(count), L_pq(count);
-        std::vector<std::vector<double>> L_pt(count), L_pqt(count), L_pQ(count), L_pnt(count), L_pid(count);
+        std::vector<std::vector<float>> H_x(count), H_y(count), H_z(count), H_dE(count);
+        std::vector<std::vector<float>> H_px(count), H_py(count), H_pq(count);
+        std::vector<std::vector<float>> H_pt(count), H_pqt(count), H_pQ(count);
+        std::vector<std::vector<int32_t>> H_pnt(count), H_pid(count);
+        std::vector<std::vector<float>> L_x(count), L_y(count), L_z(count), L_dE(count);
+        std::vector<std::vector<float>> L_px(count), L_py(count), L_pq(count);
+        std::vector<std::vector<float>> L_pt(count), L_pqt(count), L_pQ(count);
+        std::vector<std::vector<int32_t>> L_pnt(count), L_pid(count);
 
         std::vector<std::vector<PadCharge>> H_pads(count), L_pads(count);
 
-#pragma omp parallel for num_threads(nthreads)
+#pragma omp parallel for num_threads(nthreads) schedule(dynamic, 16)
         for (hsize_t i = 0; i < count; ++i) {
-            int tid = omp_get_thread_num();
+          int tid = omp_get_thread_num();
+	  procs[tid].reseed(mix_seed(base_seed, start + i));
 
             EventInput in;
             in.H = { merge_trace(H_trace[i], n_merge), 0, 0, 0 };
@@ -198,20 +234,20 @@ int main(int argc, char* argv[]) {
                                       out.L.n_electrons, out.L.sigma_T, out.L.sigma_L,
                                       cfg, qt_bufs[tid]);
 
-            H_theta[i] = out.H.dir.theta; H_phi[i] = out.H.dir.phi;
-            H_vx[i] = out.H.vx; H_vy[i] = out.H.vy; H_vz[i] = out.H.vz;
-            H_x[i] = out.H.x; H_y[i] = out.H.y; H_z[i] = out.H.z; H_dE[i] = out.H.dE;
+            H_theta[i] = (float)out.H.dir.theta; H_phi[i] = (float)out.H.dir.phi;
+            H_vx[i] = (float)out.H.vx; H_vy[i] = (float)out.H.vy; H_vz[i] = (float)out.H.vz;
+            H_x[i] = to_float(out.H.x); H_y[i] = to_float(out.H.y); H_z[i] = to_float(out.H.z); H_dE[i] = to_float(out.H.dE);
             
             double Sum = 0.0;
             for (const auto& pc : H_pads[i]) {
-                H_pnt[i].push_back((double)pc.t.size());
-                for (double t : pc.t)  H_pt[i].push_back(t);
-                for (double qt : pc.qt) H_pqt[i].push_back(qt);
-                for (double Qc : pc.Q)  H_pQ[i].push_back(Qc);
-                H_px[i].push_back(pc.x);
-                H_py[i].push_back(pc.y);
-                H_pq[i].push_back(pc.q);
-                H_pid[i].push_back((double)pc.pad_id);
+                H_pnt[i].push_back((int32_t)pc.t.size());
+                for (double t : pc.t)  H_pt[i].push_back((float)t);
+                for (double qt : pc.qt) H_pqt[i].push_back((float)qt);
+		//                for (double Qc : pc.Q)  H_pQ[i].push_back(Qc);
+                H_px[i].push_back((float)pc.x);
+                H_py[i].push_back((float)pc.y);
+                H_pq[i].push_back((float)pc.q);
+                H_pid[i].push_back((int32_t)pc.pad_id);
 
 		//		Sum+=pc.q*cfg.W ;
 	    }
@@ -219,60 +255,62 @@ int main(int argc, char* argv[]) {
 	    //            std::cout << H_KE[i] << " " << Sum << std::endl ;
 
 	    
-            L_theta[i] = out.L.dir.theta; L_phi[i] = out.L.dir.phi;
-            L_vx[i] = out.L.vx; L_vy[i] = out.L.vy; L_vz[i] = out.L.vz;
-            L_x[i] = out.L.x; L_y[i] = out.L.y; L_z[i] = out.L.z; L_dE[i] = out.L.dE;
+            L_theta[i] = (float)out.L.dir.theta; L_phi[i] = (float)out.L.dir.phi;
+            L_vx[i] = (float)out.L.vx; L_vy[i] = (float)out.L.vy; L_vz[i] = (float)out.L.vz;
+            L_x[i] = to_float(out.L.x); L_y[i] = to_float(out.L.y); L_z[i] = to_float(out.L.z); L_dE[i] = to_float(out.L.dE);
 
             for (const auto& pc : L_pads[i]) {
-                L_pnt[i].push_back((double)pc.t.size());
-                for (double t : pc.t)  L_pt[i].push_back(t);
-                for (double qt : pc.qt) L_pqt[i].push_back(qt);
-                for (double Qc : pc.Q)  L_pQ[i].push_back(Qc);
-                L_px[i].push_back(pc.x);
-                L_py[i].push_back(pc.y);
-                L_pq[i].push_back(pc.q);
-                L_pid[i].push_back((double)pc.pad_id);
+                L_pnt[i].push_back((int32_t)pc.t.size());
+                for (double t : pc.t)  L_pt[i].push_back((float)t);
+                for (double qt : pc.qt) L_pqt[i].push_back((float)qt);
+		//                for (double Qc : pc.Q)  L_pQ[i].push_back(Qc);
+                L_px[i].push_back((float)pc.x);
+                L_py[i].push_back((float)pc.y);
+                L_pq[i].push_back((float)pc.q);
+                L_pid[i].push_back((int32_t)pc.pad_id);
             }
         }
 
         auto t2 = std::chrono::steady_clock::now();
 
-        writer.write_chunk<double> ("/H/theta", H_theta, start);
-        writer.write_chunk<double> ("/H/phi",   H_phi,   start);
-        writer.write_chunk<double> ("/H/vx",    H_vx,    start);
-        writer.write_chunk<double> ("/H/vy",    H_vy,    start);
-        writer.write_chunk<double> ("/H/vz",    H_vz,    start);
-        writer.write_vlen_chunk    ("/H/x",     H_x,     start);
-        writer.write_vlen_chunk    ("/H/y",     H_y,     start);
-        writer.write_vlen_chunk    ("/H/z",     H_z,     start);
-        writer.write_vlen_chunk    ("/H/dE",    H_dE,    start);
-        writer.write_vlen_chunk    ("/H/px",    H_px,    start);
-        writer.write_vlen_chunk    ("/H/py",    H_py,    start);
-        writer.write_vlen_chunk    ("/H/pq",    H_pq,    start);
-        writer.write_vlen_chunk    ("/H/pt",    H_pt,    start);
-        writer.write_vlen_chunk    ("/H/pqt",   H_pqt,   start);
-        writer.write_vlen_chunk    ("/H/pQ",    H_pQ,    start);
-        writer.write_vlen_chunk    ("/H/pnt",   H_pnt,   start);
-        writer.write_vlen_chunk    ("/H/pid",   H_pid,   start);
+        writer.write_chunk<float> ("/H/theta", H_theta, start);
+        writer.write_chunk<float> ("/H/phi",   H_phi,   start);
+        writer.write_chunk<float> ("/H/vx",    H_vx,    start);
+        writer.write_chunk<float> ("/H/vy",    H_vy,    start);
+        writer.write_chunk<float> ("/H/vz",    H_vz,    start);
+	
+	timed_vlen<float> (writer, "/H/x",   H_x,   start);
+        timed_vlen<float> (writer, "/H/y",   H_y,   start);
+        timed_vlen<float> (writer, "/H/z",   H_z,   start);
+        timed_vlen<float> (writer, "/H/dE",  H_dE,  start);
+        timed_vlen<float> (writer, "/H/px",  H_px,  start);
+        timed_vlen<float> (writer, "/H/py",  H_py,  start);
+        timed_vlen<float> (writer, "/H/pq",  H_pq,  start);
+        timed_vlen<float> (writer, "/H/pt",  H_pt,  start);
+        timed_vlen<float> (writer, "/H/pqt", H_pqt, start);
+	//        timed_vlen<float> (writer, "/H/pQ",  H_pQ,  start);
+        timed_vlen<int32_t> (writer, "/H/pnt", H_pnt, start);
+        timed_vlen<int32_t> (writer, "/H/pid", H_pid, start);
 
-        writer.write_chunk<double> ("/L/theta", L_theta, start);
-        writer.write_chunk<double> ("/L/phi",   L_phi,   start);
-        writer.write_chunk<double> ("/L/vx",    L_vx,    start);
-        writer.write_chunk<double> ("/L/vy",    L_vy,    start);
-        writer.write_chunk<double> ("/L/vz",    L_vz,    start);
-        writer.write_vlen_chunk    ("/L/x",     L_x,     start);
-        writer.write_vlen_chunk    ("/L/y",     L_y,     start);
-        writer.write_vlen_chunk    ("/L/z",     L_z,     start);
-        writer.write_vlen_chunk    ("/L/dE",    L_dE,    start);
-        writer.write_vlen_chunk    ("/L/px",    L_px,    start);
-        writer.write_vlen_chunk    ("/L/py",    L_py,    start);
-        writer.write_vlen_chunk    ("/L/pq",    L_pq,    start);
-        writer.write_vlen_chunk    ("/L/pt",    L_pt,    start);
-        writer.write_vlen_chunk    ("/L/pqt",   L_pqt,   start);
-        writer.write_vlen_chunk    ("/L/pQ",    L_pQ,    start);
-        writer.write_vlen_chunk    ("/L/pnt",   L_pnt,   start);
-        writer.write_vlen_chunk    ("/L/pid",   L_pid,   start);
+        writer.write_chunk<float> ("/L/theta", L_theta, start);
+        writer.write_chunk<float> ("/L/phi",   L_phi,   start);
+        writer.write_chunk<float> ("/L/vx",    L_vx,    start);
+        writer.write_chunk<float> ("/L/vy",    L_vy,    start);
+        writer.write_chunk<float>("/L/vz", L_vz, start);
 
+	timed_vlen<float>(writer, "/L/x",   L_x,   start);
+        timed_vlen<float>(writer, "/L/y",   L_y,   start);
+        timed_vlen<float>(writer, "/L/z",   L_z,   start);
+        timed_vlen<float>(writer, "/L/dE",  L_dE,  start);
+        timed_vlen<float>(writer, "/L/px",  L_px,  start);
+        timed_vlen<float>(writer, "/L/py",  L_py,  start);
+        timed_vlen<float>(writer, "/L/pq",  L_pq,  start);
+        timed_vlen<float>(writer, "/L/pt",  L_pt,  start);
+        timed_vlen<float>(writer, "/L/pqt", L_pqt, start);
+	//        timed_vlen<float>(writer, "/L/pQ",  L_pQ,  start);
+        timed_vlen<int32_t>(writer, "/L/pnt", L_pnt, start);
+        timed_vlen<int32_t>(writer, "/L/pid", L_pid, start);	
+	
         auto t3 = std::chrono::steady_clock::now();
 
         double dt_read  = std::chrono::duration<double>(t1 - t0).count();
@@ -333,6 +371,14 @@ int main(int argc, char* argv[]) {
 
     std::cout << "voxels avec charge au-delà de r_active (frac > 1e-6) : "
               << pad_beyond_active_count() << "\n";
+
+    std::cout << "traces traitées : " << pad_traces_count()
+              << " ; avec au moins un voxel au-delà de r_active : "
+              << pad_traces_beyond_count() << "\n";
+
+    std::cout << "\nTemps réel total : " << omp_get_wtime() - wall0 << " s\n";
+    for (std::map<std::string,double>::const_iterator it = g_wt.begin(); it != g_wt.end(); ++it)
+      std::cout << "write " << it->first << " : " << it->second << " s\n";
     
     std::cout << "\nTerminé → " << out_path << "\n";
     return 0;

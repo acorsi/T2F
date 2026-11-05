@@ -18,6 +18,9 @@ public:
                  std::optional<Direction> dir_H = std::nullopt,
                  std::optional<Direction> dir_L = std::nullopt);
 
+  // Réinitialise le générateur (un tirage par événement, indépendant du thread)
+  void reseed(uint64_t seed);
+    
 private:
     DetectorConfig  m_cfg;
     std::mt19937_64 m_rng;  // propre à cette instance → safe OpenMP
