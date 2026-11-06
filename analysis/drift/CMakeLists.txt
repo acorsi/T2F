@@ -56,11 +56,11 @@ target_link_libraries(t2f_lib
     OpenMP::OpenMP_CXX
 )
 
+option(T2F_PROF "Compteurs et chronos de profil" OFF)
+if(T2F_PROF)
+    target_compile_definitions(t2f_lib PUBLIC T2F_PROF)
+endif()
+
 # --- Exécutables ---
 add_executable(process src/main.cpp)
 target_link_libraries(process t2f_lib)
-# --- Test de l'induction (PadPlane::project) ---
-add_executable(test_project test/test_project.cpp)
-target_link_libraries(test_project t2f_lib)
-add_executable(test_nh test/test_nh.cpp)
-target_link_libraries(test_nh t2f_lib)

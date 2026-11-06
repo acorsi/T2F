@@ -86,8 +86,12 @@ public:
 
     // Versions en float (voir pad_geometry.cpp) : même résultat à ~1e-6 près sur Psi.
     void psi_vector_f(double u, double v, double d, float* out) const;
+
+    // Variante de psi_vector_f : accumulation flux par flux, sorties gardées dans un
+    // tableau local de taille fixe (n_tau = 54). Retombe sur psi_vector_f sinon.
+    void psi_vector_g(double u, double v, double d, float* out) const;    
     void edges_values_f(const float* p, const int* idx, const double* w,
-                        int nedges, double* out) const; 
+                        int nedges, double* out) const;
   
     // --- lecture ---
     // Remplit out[0 .. n_tau()-1] avec Psi aux noeuds en tau (tau_n = (m_min+n)*dtau),

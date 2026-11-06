@@ -55,10 +55,11 @@ static void timed_vlen(H5Writer& w, const std::string& name,
 }
 
 int main(int argc, char* argv[]) {
-    // Usage : process [N_event] [seuil_qt_pos] [seuil_qt_neg] [n_threads]
-    //   seuils en électrons par bin ; sans argument : valeurs de detector.hpp (+200 / -200).
-    //   Pour tout lire (contrôles de conservation) : ./process 200 0 0
-    //   n_threads : 14 par défaut ; 1 pour des tirages reproductibles d'une version à l'autre.
+  // Usage : process [N] [seuil_pos] [seuil_neg] [n_threads] [frag_mask]
+  //   frag_mask : 3 = H et L (défaut), 1 = H seul, 2 = L seul
+  //   seuils en électrons par bin ; sans argument : valeurs de detector.hpp (+200 / -200).
+  //   Pour tout lire (contrôles de conservation) : ./process 200 0 0
+  //   n_threads : 8 par défaut ; 1 pour des tirages reproductibles d'une version à l'autre.
 
     const std::string in_path  = "../../../simulation_output/T2F_G4_40mu.h5";
     const std::string out_path = "../drift_output/drift_G4_40mu_merged.h5";
@@ -149,24 +150,25 @@ int main(int argc, char* argv[]) {
     writer.write_attribute<int>("/metadata", "n_tau", plane.table().n_tau());
     writer.write_attribute<int>("/metadata", "n_pads", (int)plane.pads().size());
 
-    for (const std::string& frag : {"/H", "/L"}) {
-        writer.add_dataset<float>     (frag + "/theta");
-        writer.add_dataset<float>     (frag + "/phi");
-        writer.add_dataset<float>     (frag + "/vx");
-        writer.add_dataset<float>     (frag + "/vy");
-        writer.add_dataset<float>     (frag + "/vz");
-        writer.add_vlen_dataset<float>(frag + "/x");
-        writer.add_vlen_dataset<float>(frag + "/y");
-        writer.add_vlen_dataset<float>(frag + "/z");
-        writer.add_vlen_dataset<float>(frag + "/dE");
-        writer.add_vlen_dataset<float>(frag + "/px");
-        writer.add_vlen_dataset<float>(frag + "/py");
-        writer.add_vlen_dataset<float>(frag + "/pq");
-        writer.add_vlen_dataset<float>(frag + "/pt");        
-        writer.add_vlen_dataset<float>(frag + "/pqt");        
-        writer.add_vlen_dataset<float>(frag + "/pnt");        
-        writer.add_vlen_dataset<float>(frag + "/pid");
-	//        writer.add_vlen_dataset<float>     (frag + "/pQ");        
+    for (const std::string &frag : {"/H", "/L"}) {
+      writer.add_dataset<float>     (frag + "/KE");
+      writer.add_dataset<float>     (frag + "/theta");
+      writer.add_dataset<float>     (frag + "/phi");
+      writer.add_dataset<float>     (frag + "/vx");
+      writer.add_dataset<float>     (frag + "/vy");
+      writer.add_dataset<float>     (frag + "/vz");
+      writer.add_vlen_dataset<float>(frag + "/x");
+      writer.add_vlen_dataset<float>(frag + "/y");
+      writer.add_vlen_dataset<float>(frag + "/z");
+      writer.add_vlen_dataset<float>(frag + "/dE");
+      writer.add_vlen_dataset<float>(frag + "/px");
+      writer.add_vlen_dataset<float>(frag + "/py");
+      writer.add_vlen_dataset<float>(frag + "/pq");
+      writer.add_vlen_dataset<float>(frag + "/pt");        
+      writer.add_vlen_dataset<float>(frag + "/pqt");        
+      writer.add_vlen_dataset<float>(frag + "/pnt");        
+      writer.add_vlen_dataset<float>(frag + "/pid");
+      //        writer.add_vlen_dataset<float>     (frag + "/pQ");        
     }
 
     // --- Boucle par chunks ---
@@ -176,6 +178,11 @@ int main(int argc, char* argv[]) {
 
     std::cout << "\n\033[1;32m" << nthreads << " running threads...\033[0m\n\n";
 
+    int frag_mask = 3;
+    if (argc > 5) frag_mask = std::stoi(argv[5]);
+    std::cout << "frag_mask         = " << frag_mask << "\n";
+    const std::vector<double> empty_vec;      // trace vide, en lecture seule (thread-safe)
+    
     const uint64_t base_seed = 42;
     std::vector<Processor> procs;
     procs.reserve(nthreads);
@@ -193,14 +200,17 @@ int main(int argc, char* argv[]) {
 
         auto t0 = std::chrono::steady_clock::now();
 
-	auto H_KE = reader.read_chunk<double>("/H/KE", start, count) ;
+        auto H_KE = reader.read_chunk<double>("/H/KE", start, count);
+        auto L_KE = reader.read_chunk<double>("/L/KE", start, count);        
         auto H_trace = reader.read_vlen_chunk("/H/raw_trace", start, count);
         auto L_trace = reader.read_vlen_chunk("/L/raw_trace", start, count);
 
         auto t1 = std::chrono::steady_clock::now();
 
+	std::vector<float> H_KEf(count);
         std::vector<float> H_theta(count), H_phi(count);
         std::vector<float> H_vx(count), H_vy(count), H_vz(count);
+        std::vector<float> L_KEf(count);
         std::vector<float> L_theta(count), L_phi(count);
         std::vector<float> L_vx(count), L_vy(count), L_vz(count);
 
@@ -226,19 +236,32 @@ int main(int argc, char* argv[]) {
 
             EventOutput out;
             procs[tid].process(in, out);
+	    
+	    FragTrace fH = { &out.H.x, &out.H.y, &out.H.z, &out.H.n_electrons, &out.H.sigma_T };
+            FragTrace fL = { &out.L.x, &out.L.y, &out.L.z, &out.L.n_electrons, &out.L.sigma_T };
+            if (!(frag_mask & 1)) {
+	      fH.x = &empty_vec; fH.y = &empty_vec; fH.z = &empty_vec;
+	      fH.n_electrons = &empty_vec; fH.sigma_T = &empty_vec;
+            }
+            if (!(frag_mask & 2)) {
+	      fL.x = &empty_vec; fL.y = &empty_vec; fL.z = &empty_vec;
+	      fL.n_electrons = &empty_vec; fL.sigma_T = &empty_vec;
+            }
+            plane.project_pair(fH, fL, cfg, qt_bufs[tid], H_pads[i], L_pads[i]);
 
-            H_pads[i] = plane.project(out.H.x, out.H.y, out.H.z,
-                                      out.H.n_electrons, out.H.sigma_T, out.H.sigma_L,
-                                      cfg, qt_bufs[tid]);
-            L_pads[i] = plane.project(out.L.x, out.L.y, out.L.z,
-                                      out.L.n_electrons, out.L.sigma_T, out.L.sigma_L,
-                                      cfg, qt_bufs[tid]);
+	    // H_pads[i] = plane.project(out.H.x, out.H.y, out.H.z,
+            //                           out.H.n_electrons, out.H.sigma_T, out.H.sigma_L,
+            //                           cfg, qt_bufs[tid]);
+            // L_pads[i] = plane.project(out.L.x, out.L.y, out.L.z,
+            //                           out.L.n_electrons, out.L.sigma_T, out.L.sigma_L,
+            //                           cfg, qt_bufs[tid]);
 
+	    H_KEf[i] = (float)H_KE[i];
             H_theta[i] = (float)out.H.dir.theta; H_phi[i] = (float)out.H.dir.phi;
             H_vx[i] = (float)out.H.vx; H_vy[i] = (float)out.H.vy; H_vz[i] = (float)out.H.vz;
             H_x[i] = to_float(out.H.x); H_y[i] = to_float(out.H.y); H_z[i] = to_float(out.H.z); H_dE[i] = to_float(out.H.dE);
             
-            double Sum = 0.0;
+            // double Sum = 0.0;
             for (const auto& pc : H_pads[i]) {
                 H_pnt[i].push_back((int32_t)pc.t.size());
                 for (double t : pc.t)  H_pt[i].push_back((float)t);
@@ -249,12 +272,13 @@ int main(int argc, char* argv[]) {
                 H_pq[i].push_back((float)pc.q);
                 H_pid[i].push_back((int32_t)pc.pad_id);
 
-		//		Sum+=pc.q*cfg.W ;
+		// Sum+=pc.q*cfg.W ;
 	    }
 
-	    //            std::cout << H_KE[i] << " " << Sum << std::endl ;
+	    // if(fabs(Sum-H_KE[i])/H_KE[i]>30.e-2)
+	    //   std::cout << H_KE[i] << " " << Sum << std::endl ;
 
-	    
+	    L_KEf[i] = (float)L_KE[i];
             L_theta[i] = (float)out.L.dir.theta; L_phi[i] = (float)out.L.dir.phi;
             L_vx[i] = (float)out.L.vx; L_vy[i] = (float)out.L.vy; L_vz[i] = (float)out.L.vz;
             L_x[i] = to_float(out.L.x); L_y[i] = to_float(out.L.y); L_z[i] = to_float(out.L.z); L_dE[i] = to_float(out.L.dE);
@@ -273,6 +297,7 @@ int main(int argc, char* argv[]) {
 
         auto t2 = std::chrono::steady_clock::now();
 
+	writer.write_chunk<float>("/H/KE", H_KEf, start);
         writer.write_chunk<float> ("/H/theta", H_theta, start);
         writer.write_chunk<float> ("/H/phi",   H_phi,   start);
         writer.write_chunk<float> ("/H/vx",    H_vx,    start);
@@ -292,6 +317,7 @@ int main(int argc, char* argv[]) {
         timed_vlen<int32_t> (writer, "/H/pnt", H_pnt, start);
         timed_vlen<int32_t> (writer, "/H/pid", H_pid, start);
 
+	writer.write_chunk<float>("/L/KE", L_KEf, start);        
         writer.write_chunk<float> ("/L/theta", L_theta, start);
         writer.write_chunk<float> ("/L/phi",   L_phi,   start);
         writer.write_chunk<float> ("/L/vx",    L_vx,    start);
@@ -343,6 +369,8 @@ int main(int argc, char* argv[]) {
         T.n_skip_sel += S.n_skip_sel;
         T.n_cell_touched += S.n_cell_touched;
         T.n_cell_keep += S.n_cell_keep;
+        T.n_cell_wasted += S.n_cell_wasted;
+	T.sum_nb += S.sum_nb;
         
       }
       std::cout << "psi_vector : " << T.t_vec << "  ("
@@ -360,12 +388,19 @@ int main(int argc, char* argv[]) {
                 << "  contrib/cellule=" << (double)T.n_contrib / T.n_cell
                 << "\n"
                 << "µs par cellule : " << 1.0e6 * T.t_tot / T.n_cell << "\n"
-                << "  n_e moyen par voxel=" << T.sum_ne / T.n_vox
-                << "\n"
-		<< "paires sautées par la sélection : "
-		<< 100.0 * T.n_skip_sel / (T.n_cell + T.n_skip_sel) << " % des paires\n"
-		<< "cellules gardées par la borne : " << 100.0*T.n_cell_keep/T.n_cell_touched << " % des cellules touchées\n";
-          
+                << "  n_e moyen par voxel=" << T.sum_ne / T.n_vox << "\n"
+                << "paires sautées par la sélection : "
+                << 100.0 * T.n_skip_sel / (T.n_cell + T.n_skip_sel)
+                << " % des paires\n"
+                << "cellules gardées par la borne : "
+                << 100.0 * T.n_cell_keep / T.n_cell_touched
+                << " % des cellules touchées\n"
+                << "cellules inutiles (électrode non lue) : "
+                << 100.0 * T.n_cell_wasted / T.n_cell
+                << " % des cellules calculées\n"
+		<< "nb moyen par cellule : " << T.sum_nb / T.n_cell
+		<< "  (n_tau = " << plane.table().n_tau() << ")\n";
+      
     }
 #endif
 

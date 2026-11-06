@@ -318,6 +318,68 @@ void PsiTable::psi_vector_f(double u, double v, double d, float* out) const {
     }
 }
 
+void PsiTable::psi_vector_g(double u, double v, double d, float* out) const {
+    const int NT = 54;
+    const int n_tau = m_max - m_min + 1;
+    if (n_tau != NT) { psi_vector_f(u, v, d, out); return; }
+    const int n_out = m_tp.n_out;
+
+    if (d < 0.0) d = 0.0;
+    if (d > m_tp.d_max) d = m_tp.d_max;
+    double xs = (0.5 * std::log(m_tp.DT_kg * m_tp.DT_kg * d + m_c0) - m_x0) / m_dx;
+    int nd = m_tp.n_d;
+    int kb = (int)xs;
+    if (kb < 1) kb = 1;
+    if (kb > nd - 3) kb = nd - 3;
+    double wd[4];
+    lagrange4(xs - kb, wd);
+
+    double xu = std::fabs(u) / m_tp.step_out;
+    double xv = std::fabs(v) / m_tp.step_out;
+    int i0 = (int)xu;
+    int j0 = (int)xv;
+    if (i0 >= n_out || j0 >= n_out) {
+        for (int n = 0; n < NT; ++n) out[n] = 0.0f;
+        return;
+    }
+    double wu[4], wv[4];
+    lagrange4(xu - i0, wu);
+    lagrange4(xv - j0, wv);
+
+    const size_t taille_d = (size_t)n_out * n_out * n_tau;
+
+    const float* ptr[64];
+    float        wgt[64];
+    int ns = 0;
+    for (int kk = 0; kk < 4; ++kk) {
+        const float* base = &m_data[(size_t)(kb - 1 + kk) * taille_d];
+        for (int ia = 0; ia < 4; ++ia) {
+            int i = i0 - 1 + ia;
+            if (i < 0) i = -i;
+            if (i >= n_out) continue;
+            for (int jb = 0; jb < 4; ++jb) {
+                int j = j0 - 1 + jb;
+                if (j < 0) j = -j;
+                if (j >= n_out) continue;
+                ptr[ns] = base + ((size_t)i * n_out + j) * n_tau;
+                wgt[ns] = (float)(wd[kk] * wu[ia] * wv[jb]);
+                ++ns;
+            }
+        }
+    }
+
+    // accumulation : une lecture contiguë de 54 floats par flux
+    float acc[NT];
+    for (int n = 0; n < NT; ++n) acc[n] = 0.0f;
+    for (int s = 0; s < ns; ++s) {
+        const float* p = ptr[s];
+        const float  w = wgt[s];
+        for (int n = 0; n < NT; ++n) acc[n] += w * p[n];
+    }
+    for (int n = 0; n < NT; ++n) out[n] = acc[n];
+}
+
+
 void PsiTable::edges_values_f(const float* p, const int* idx, const double* w,
                               int nedges, double* out) const {
     const int n_tau = m_max - m_min + 1;

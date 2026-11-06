@@ -32,7 +32,14 @@ struct PadCharge {
     double q;                  // charge finale du pad, en électrons (= dernier Q)
     std::vector<double> t;
     std::vector<double> qt;
-    std::vector<double> Q;
+};
+
+struct FragTrace {
+    const std::vector<double>* x;
+    const std::vector<double>* y;
+    const std::vector<double>* z;
+    const std::vector<double>* n_electrons;
+    const std::vector<double>* sigma_T;
 };
 
 // ---------------------------------------------------------------------------
@@ -79,14 +86,19 @@ public:
     // qt_buf : tampon de travail propre au thread, n_pads x n_bins, rempli de zéros
     // à l'entrée et laissé à zéro en sortie.
     // Thread-safe : la table et la géométrie sont en lecture seule.
-    std::vector<PadCharge> project(const std::vector<double>& x,
-                                   const std::vector<double>& y,
-                                   const std::vector<double>& z,
-                                   const std::vector<double>& n_electrons,
-                                   const std::vector<double>& sigma_T,
-                                   const std::vector<double>& sigma_L,
-                                   const DetectorConfig& cfg,
-                                   std::vector<std::vector<double>>& qt_buf) const;
+    // std::vector<PadCharge>
+    // project(const std::vector<double> &x, const std::vector<double> &y,
+    //         const std::vector<double> &z,
+    //         const std::vector<double> &n_electrons,
+    //         const std::vector<double> &sigma_T,
+    //         const std::vector<double> &sigma_L, const DetectorConfig &cfg,
+    //         std::vector<std::vector<double>> &qt_buf) const;
+    
+  void project_pair(const FragTrace& H, const FragTrace& L,
+		    const DetectorConfig& cfg,
+		    std::vector<std::vector<double>>& qt_buf,
+		    std::vector<PadCharge>& resH,
+		    std::vector<PadCharge>& resL) const;    
 
     // Pour les tests : nombre de cellules, et charge perdue au-delà de r_active.
     int n_cells() const { return (int)m_cells.size(); }
