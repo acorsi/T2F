@@ -3,13 +3,28 @@
 Viewer type2 : plan d'anode 2D (H+L) + profils Q(t) H et L.
 
 Usage:
-    python view_type2.py output.h5 [--event N]
+    python view_type2.py output.h5 [--event N] [--old ancien.h5] [--pad_file my_pad.txt]
+
+Avec --old : les courbes de l'ancienne version (sans induction, même événement) sont
+superposées en tirets à celles de la nouvelle version (trait plein). Les pads sélectionnés
+sont toujours ceux de la nouvelle version.
 
 Navigation:
     -> / d : event suivant
     <- / a : event précédent
     ↑ / ↓  : seuil +/- step
+    clic    : ajoute / retire le pad cliqué (plan d'anode) des traces
+    c       : efface la sélection et revient à la sélection automatique
+              (les N_AUTO pads les plus chargés + le pad au lobe négatif le plus profond)
+    i       : bascule la sélection automatique : pads au-dessus du seuil <-> tous les pads écrits
     q       : quitter
+
+Titre de l'anode : KE de chaque fragment comparé à la somme des pads écrits (x W), puis
+total de l'événement (pads distincts) comparé à la somme des KE des fragments actifs.
+
+Panneaux de droite : en haut qt par bin (signé), en bas somme cumulée des qt écrits
+(le point marque la charge finale pq). Chaque pad sélectionné a la même couleur sur le
+plan d'anode (contour épais) et sur les courbes.
 """
 
 import argparse
@@ -41,17 +56,39 @@ def _shapely_to_mpl_path(geom):
     return MplPath(verts, codes)
 
 
+N_AUTO = 4
+COULEURS = ["tab:red", "tab:blue", "tab:green", "tab:orange", "tab:purple",
+            "tab:brown", "tab:pink", "tab:olive", "tab:cyan", "k"]
+
+
 class ViewerType2:
-    def __init__(self, h5_path, pad_file=None, start_event=0):
+    def __init__(self, h5_path, pad_file=None, start_event=0, old_path=None):
         self.f = h5py.File(h5_path, "r")
         self.n_events = self.f["/H/dE"].shape[0]
-        self.event = start_event
+        self.event = min(max(start_event, 0), self.n_events - 1)
 
         m = read_metadata(self.f)
         self.pad_size  = m["pad_size"]
         self.inter_pad = m["inter_pad"]
         self.delta_t   = m["delta_t"]
 
+        # pour la comparaison à KE
+        attrs = self.f["/metadata"].attrs
+        self.W = float(attrs["W"])                       # MeV par paire
+        self.frag_mask = int(attrs["frag_mask"]) if "frag_mask" in attrs else 3
+        self.has_KE = ("KE" in self.f["/H"]) and ("KE" in self.f["/L"])
+
+        self.f_old = None
+        self.delta_t_old = self.delta_t
+        if old_path:
+            self.f_old = h5py.File(old_path, "r")
+            self.delta_t_old = read_metadata(self.f_old)["delta_t"]
+            if self.f_old["/H/dE"].shape[0] != self.n_events:
+                print("[view_type2] ATTENTION : nombres d'événements différents (nouveau %d, ancien %d)"
+                      % (self.n_events, self.f_old["/H/dE"].shape[0]))
+        self.mode = "qt"          # utilisé en interne par _combined_qt
+        self.show_all = False     # sélection automatique parmi tous les pads écrits
+        self.selected = []        # pad_id choisis au clic (vide = sélection automatique)
         self.threshold      = 100.0
         self.threshold_step = 1000.0
         self.cbar = None
@@ -70,12 +107,25 @@ class ViewerType2:
                 print(f"[view_type2] pad_file '{pad_file}' introuvable — "
                       "les anneaux ne seront pas affichés correctement.")
 
+        self.r_view = 10.0
+        if self.pad_geom:
+            self._check_pad_file()
+            r = 0.0
+            for pid, (px, py, r_in, r_out, sx, sy) in self.pad_geom.items():
+                if r_out > 0.0:
+                    r = max(r, r_out)
+                else:
+                    r = max(r, np.hypot(px, py) + self.pad_size)
+            self.r_view = float(np.ceil(r))
+                
         self.fig = plt.figure(figsize=(18, 7))
-        self.ax_pad  = self.fig.add_axes([0.04, 0.08, 0.38, 0.84])
-        self.ax_qt   = self.fig.add_axes([0.50, 0.08, 0.44, 0.84])
+        self.ax_pad  = self.fig.add_axes([0.04, 0.08, 0.38, 0.80])
+        self.ax_qt   = self.fig.add_axes([0.52, 0.55, 0.43, 0.37])
+        self.ax_Q    = self.fig.add_axes([0.52, 0.08, 0.43, 0.37], sharex=self.ax_qt)
         self.cbar_ax = self.fig.add_axes([0.44, 0.15, 0.02, 0.7])
 
         self.fig.canvas.mpl_connect("key_press_event", self._on_key)
+        self.fig.canvas.mpl_connect("button_press_event", self._on_click)
         self._draw()
         plt.show()
 
@@ -92,23 +142,103 @@ class ViewerType2:
         elif event.key == "down":
             self.threshold = max(0.0, self.threshold - self.threshold_step)
             self._draw()
+        elif event.key == "c":
+            self.selected = []
+            self._draw()
+        elif event.key == "i":
+            self.show_all = not self.show_all
+            self._draw()
         elif event.key == "q":
             plt.close(self.fig)
 
-    def _combined_qt(self, i):
-        """Construit, par pad_id, la série temporelle Q(t) combinée H+L.
-
-        Les qt sont sommés uniquement pour les bins temporels identiques
-        (même k = round(t/delta_t)) ; un bin présent dans un seul fragment
-        est conservé tel quel. Utilise k plutôt que t directement pour
-        éviter tout souci d'égalité en flottant.
-        """
-        series = {}  # pad_id -> {k: qt_sum}
+    def _check_pad_file(self):
+        """Avertit si le fichier de pads ne correspond pas à la sortie .h5."""
+        # 1) pas des lignes de pads = pad_size + inter_pad ?
+        ys = sorted(set(round(g[1], 6) for g in self.pad_geom.values() if g[3] == 0.0))
+        if len(ys) > 1:
+            pitch_file = min(b - a for a, b in zip(ys[:-1], ys[1:]))
+            pitch_h5 = self.pad_size + self.inter_pad
+            if abs(pitch_file - pitch_h5) > 1e-4:
+                print("[view_type2] ATTENTION : pas de pads du fichier %.4f cm, du .h5 %.4f cm : "
+                      "mauvais --pad_file ?" % (pitch_file, pitch_h5))
+        # 2) tous les pad_id écrits (200 premiers événements) existent-ils dans le fichier ?
+        ids = set()
         for frag in ("H", "L"):
-            pid = np.array(self.f[f"/{frag}/pid"][i], dtype=int)
-            pt  = np.array(self.f[f"/{frag}/pt"][i])
-            pqt = np.array(self.f[f"/{frag}/pqt"][i])
-            pnt = np.array(self.f[f"/{frag}/pnt"][i], dtype=int)
+            for arr in self.f["/%s/pid" % frag][:200]:
+                ids.update(int(p) for p in arr)
+        manquants = [p for p in ids if p not in self.pad_geom]
+        if manquants:
+            print("[view_type2] ATTENTION : %d pad_id du .h5 absents du fichier de pads "
+                  "(ex. %s) : mauvais --pad_file ?" % (len(manquants), manquants[:5]))    
+            
+    def _pad_at(self, x, y):
+        """Identifiant du pad situé au point (x, y) du plan d'anode, ou None."""
+        h0 = self.pad_size / 2.0
+        for pid, (px, py) in getattr(self, "pad_pos", {}).items():
+            if abs(x - px) <= h0 and abs(y - py) <= h0:
+                return pid
+        if not self.pad_geom:
+            return None
+        h = self.pad_size / 2.0
+        for pid, (px, py, r_in, r_out, sx, sy) in self.pad_geom.items():
+            if r_out == 0.0 and abs(x - px) <= h and abs(y - py) <= h:
+                return pid
+        r = np.hypot(x, y)
+        for pid, (px, py, r_in, r_out, sx, sy) in self.pad_geom.items():
+            if r_out > 0.0 and r_in <= r < r_out and (x > 0) == (sx > 0) and (y > 0) == (sy > 0):
+                return pid
+        return None
+
+    def _on_click(self, event):
+        if event.inaxes is not self.ax_pad or event.xdata is None:
+            return
+        pid = self._pad_at(event.xdata, event.ydata)
+        if pid is None:
+            return
+        if pid in self.selected:
+            self.selected.remove(pid)
+        elif len(self.selected) < len(COULEURS):
+            self.selected.append(pid)
+        self._draw()
+
+    def _pad_patch(self, pad_id, px_k=None, py_k=None):
+        """Patch matplotlib d'un pad (carré, transition ou anneau)."""
+        h = self.pad_size / 2.0
+        g = self.pad_geom[pad_id] if (self.pad_geom and pad_id in self.pad_geom) else None
+        if g is None:
+            return mpatches.Rectangle((px_k - h, py_k - h), self.pad_size, self.pad_size)
+        x, y, r_in, r_out, sx, sy = g
+        if r_out == 0.0:
+            return mpatches.Rectangle((x - h, y - h), self.pad_size, self.pad_size)
+        if pad_id in self.trans_paths:
+            return mpatches.PathPatch(self.trans_paths[pad_id])
+        sx, sy = int(sx), int(sy)
+        if   sx > 0 and sy > 0: theta1, theta2 = 0, 90
+        elif sx < 0 and sy > 0: theta1, theta2 = 90, 180
+        elif sx < 0 and sy < 0: theta1, theta2 = 180, 270
+        else:                   theta1, theta2 = 270, 360
+        return mpatches.Wedge((0, 0), r_out, theta1, theta2, width=max(r_out - r_in, 0.01))
+
+    def _combined_qt(self, i, f=None, dt=None):
+        """Construit, par pad_id, la série temporelle du pad, dict {k: valeur}
+        avec k = round(t/delta_t).
+
+        Un pad partagé par H et L est écrit à l'identique dans les deux fragments
+        (charges déjà sommées) : on ne le prend qu'une fois.
+
+        mode "qt"   : qt par bin.
+        mode "Qold" : somme cumulée des qt écrits.
+        """
+        if f is None:
+            f = self.f
+        if dt is None:
+            dt = self.delta_t
+        per_frag = {}   # pad_id -> liste de (ks, valeurs)
+        for frag in ("H", "L"):
+            pid = np.array(f[f"/{frag}/pid"][i], dtype=int)
+            pk0 = np.array(f[f"/{frag}/pk0"][i]).astype(int)
+            pnt = np.array(f[f"/{frag}/pnt"][i], dtype=int)
+            pv  = np.array(f[f"/{frag}/pqt"][i])
             if len(pnt) == 0:
                 continue
 
@@ -118,44 +248,175 @@ class ViewerType2:
                 if n == 0:
                     continue
                 pad_id = int(pid[k_pad])
-                t_pad  = pt[offsets[k_pad]:offsets[k_pad] + n]
-                qt_pad = pqt[offsets[k_pad]:offsets[k_pad] + n]
+                if pad_id in per_frag:      # pad partagé : H et L portent la même somme
+                    continue
+                ks = list(range(int(pk0[k_pad]), int(pk0[k_pad]) + int(n)))
+                vs = [float(v) for v in pv[offsets[k_pad]:offsets[k_pad] + n]]
+                if self.mode == "Qold":
+                    vs = list(np.cumsum(vs))
+                per_frag.setdefault(pad_id, []).append((ks, vs))
 
-                bins = series.setdefault(pad_id, {})
-                for t_val, q_val in zip(t_pad, qt_pad):
-                    key = int(round(float(t_val) / self.delta_t))
-                    bins[key] = bins.get(key, 0.0) + float(q_val)
-
+        series = {}
+        for pad_id, lst in per_frag.items():
+            bins = {}
+            if self.mode == "qt":
+                for ks, vs in lst:
+                    for k, v in zip(ks, vs):
+                        bins[k] = bins.get(k, 0.0) + v
+            else:
+                all_k = sorted(set(k for ks, vs in lst for k in ks))
+                for k in all_k:
+                    tot = 0.0
+                    for ks, vs in lst:
+                        last = 0.0
+                        for kk, vv in zip(ks, vs):
+                            if kk <= k:
+                                last = vv
+                            else:
+                                break
+                        tot += last
+                    bins[k] = tot
+            series[pad_id] = bins
         return series
 
     def _draw_qt(self, i, pad_totals):
-        """Trace, pour chaque pad passant le seuil (charge totale H+L),
-        son profil Q(t) combiné."""
-        ax = self.ax_qt
-        ax.clear()
+        """Trace qt(t) (haut) et somme cumulée (bas) des pads sélectionnés."""
+        series_qt = self._combined_qt_mode(i, "qt")
+        series_Q = self._combined_qt_mode(i, "Qold")
+        old_qt, old_Q, old_q = {}, {}, {}
+        if self.f_old is not None:
+            old_qt = self._combined_qt_mode(i, "qt", self.f_old, self.delta_t_old)
+            old_Q = self._combined_qt_mode(i, "Qold", self.f_old, self.delta_t_old)
+            old_q = self._final_charges(self.f_old, i)
 
-        series = self._combined_qt(i)
-        passing_ids = sorted(pid for pid, q in pad_totals.items()
-                             if q >= self.threshold and pid in series)
+        if self.selected:
+            ids = [p for p in self.selected if p in series_qt or p in old_qt]
+        else:
+            if self.show_all:
+                cand = list(series_qt.keys())
+            else:
+                cand = [p for p, q in pad_totals.items() if q >= self.threshold and p in series_qt]
+            ids = sorted(cand, key=lambda p: -pad_totals.get(p, 0.0))[:N_AUTO]
+            # pad au lobe négatif le plus profond (parmi les candidats)
+            if cand:
+                prof = min(cand, key=lambda p: min(series_qt[p].values()))
+                if min(series_qt[prof].values()) < 0.0 and prof not in ids:
+                    ids.append(prof)
+        self.shown = ids
 
-        if not passing_ids:
-            ax.text(0.5, 0.5, "Aucun signal", ha="center", va="center",
-                   transform=ax.transAxes)
-            ax.set_title("Q(t) combiné (H+L)")
+        for ax in (self.ax_qt, self.ax_Q):
+            ax.clear()
+        if not ids:
+            self.ax_qt.text(0.5, 0.5, "Aucun pad sélectionné", ha="center", va="center",
+                            transform=self.ax_qt.transAxes)
             return
 
-        cmap = plt.colormaps["tab20"]
-        for n, pad_id in enumerate(passing_ids):
-            bins = series[pad_id]
+        for n, pad_id in enumerate(ids):
+            col = COULEURS[n % len(COULEURS)]
+            lab = f"pad {pad_id}  (q={pad_totals.get(pad_id, 0.0):.0f}"
+            if self.f_old is not None:
+                lab += f" / ancien {old_q.get(pad_id, 0.0):.0f}"
+            lab += ")"
+            bins = series_qt.get(pad_id, {})
             ks = sorted(bins.keys())
-            t_vals  = [k * self.delta_t for k in ks]
-            qt_vals = [bins[k] for k in ks]
-            ax.plot(t_vals, qt_vals, color=cmap(n % 20 / 20), lw=1.2, alpha=0.8)
+            self.ax_qt.plot([k * self.delta_t for k in ks], [bins[k] for k in ks],
+                            color=col, lw=1.4, marker=".", label=lab)
 
-        ax.set_xlabel("t (ns)")
-        ax.set_ylabel("Q (e⁻)")
-        ax.set_title(f"Q(t) combiné H+L  ({len(passing_ids)} pads, "
-                    f"seuil>{self.threshold:.0f} e⁻)")
+            if pad_id in series_Q:
+                bq = series_Q[pad_id]
+                kq = sorted(bq.keys())
+                self.ax_Q.step([k * self.delta_t for k in kq], [bq[k] for k in kq],
+                               where="post", color=col, lw=1.4)
+                # charge finale réelle (pq) : point à droite du dernier bin écrit
+                self.ax_Q.plot([(kq[-1] + 1) * self.delta_t], [pad_totals.get(pad_id, 0.0)],
+                               marker="o", color=col, ms=6, ls="none")
+            if pad_id in old_qt:                      # ancienne version : tirets
+                bo = old_qt[pad_id]
+                ko = sorted(bo.keys())
+                self.ax_qt.plot([k * self.delta_t_old for k in ko], [bo[k] for k in ko],
+                                color=col, lw=1.2, ls="--", marker="x", ms=4, alpha=0.9)
+            if pad_id in old_Q:
+                bo = old_Q[pad_id]
+                ko = sorted(bo.keys())
+                self.ax_Q.step([k * self.delta_t_old for k in ko], [bo[k] for k in ko],
+                               where="post", color=col, lw=1.2, ls="--")
+        for ax in (self.ax_qt, self.ax_Q):
+            ax.axhline(0.0, color="0.6", lw=0.6)
+        self.ax_qt.set_ylabel("qt par bin (e⁻)")
+        self.ax_qt.set_title("Signal des pads sélectionnés (clic sur le plan pour ajouter / retirer)",
+                             fontsize=10)
+        leg = self.ax_qt.legend(fontsize=8, loc="upper right")
+        if self.f_old is not None:
+            from matplotlib.lines import Line2D
+            proxy = [Line2D([0], [0], color="0.3", lw=1.4, marker="."),
+                     Line2D([0], [0], color="0.3", lw=1.2, ls="--", marker="x", ms=4)]
+            self.ax_Q.legend(proxy, ["nouvelle version", "ancienne version"], fontsize=8,
+                             loc="upper left")
+            self.ax_qt.add_artist(leg)
+        self.ax_Q.set_xlabel("t (ns)")
+        self.ax_Q.set_ylabel("Σ qt écrits (e⁻)  ; point = pq final")
+
+
+        # contours colorés sur le plan d'anode
+        h = self.pad_size / 2.0
+        for n, pad_id in enumerate(ids):
+            g = self.pad_geom.get(pad_id) if self.pad_geom else None
+            if g is not None and g[3] > 0.0:          # anneau / pad de transition : géométrie du fichier
+                patch = self._pad_patch(pad_id)
+            elif pad_id in self.pad_pos:               # pad carré : centre lu dans le .h5
+                x, y = self.pad_pos[pad_id]
+                patch = mpatches.Rectangle((x - h, y - h), self.pad_size, self.pad_size)
+            else:
+                continue                               # pad absent de l'événement courant (nouveau/ancien)
+            patch.set_facecolor("none")
+            patch.set_edgecolor(COULEURS[n % len(COULEURS)])
+            patch.set_linewidth(2.2)
+            patch.set_zorder(8)
+            self.ax_pad.add_patch(patch)        
+
+    def _combined_qt_mode(self, i, mode, f=None, dt=None):
+        old = self.mode
+        self.mode = mode
+        try:
+            return self._combined_qt(i, f, dt)
+        finally:
+            self.mode = old
+
+    def _final_charges(self, f, i):
+        """Charge finale pq par pad_id pour l'événement i du fichier f
+        (un pad partagé porte la même valeur dans H et L)."""
+        out = {}
+        for frag in ("H", "L"):
+            pid = np.array(f[f"/{frag}/pid"][i], dtype=int)
+            pq = np.array(f[f"/{frag}/pq"][i])
+            for p, q in zip(pid.tolist(), pq.tolist()):
+                out[p] = q
+        return out
+
+    def _ke_lines(self, i, pad_totals):
+        """Trois lignes : H, L (KE contre somme des pads du fragment), total événement."""
+        if not self.has_KE:
+            return ""
+
+        def rel(s, k):
+            return (s - k) / k if k != 0.0 else float("nan")
+
+        lines = []
+        ke_act, s_act = 0.0, 0.0
+        for bit, frag in ((1, "H"), (2, "L")):
+            ke = float(self.f[f"/{frag}/KE"][i])
+            if not (self.frag_mask & bit):
+                lines.append("%s : éteint (KE = %.3f MeV)" % (frag, ke))
+                continue
+            pq = np.array(self.f[f"/{frag}/pq"][i], dtype=np.float64)
+            s = pq.sum() * self.W
+            lines.append("%s : KE = %.3f MeV | Σ pads·W = %.3f MeV | écart rel = %+.2e"
+                         % (frag, ke, s, rel(s, ke)))
+            ke_act += ke
+        s_tot = sum(pad_totals.values()) * self.W
+        lines.append("Total (pads distincts) : Σ pads·W = %.3f MeV | KE = %.3f MeV | écart rel = %+.2e"
+                     % (s_tot, ke_act, rel(s_tot, ke_act)))
+        return "\n".join(lines)
 
     def _compute_transition_shapes(self, squares_union, ring_entries, r_quinc):
         """Anneau de transition = disque complet (rayon r_transition) moins
@@ -179,14 +440,7 @@ class ViewerType2:
         """Calcule, une fois pour toutes, le contour exact de chaque pad de
         transition : quart de disque (rayon r_transition) moins l'union des
         carrés cartésiens qui l'empiètent réellement — reflète le vrai bord
-        en escalier plutôt que la fausse frontière circulaire r_in. Utilisé
-        pour l'affichage des charges réelles (self.trans_paths, précision
-        physique) ; conserve aussi l'union exacte et les entrées d'anneaux
-        pour que _build_background_patches puisse recalculer une variante
-        dilatée cohérente avec son propre contour cartésien."""
-        # Union de tous les carrés cartésiens (empreinte géométrique réelle,
-        # peu importe leur quadrant : la différence booléenne clippe seule
-        # à la bonne portion pour chaque quart de disque)
+        en escalier plutôt que la fausse frontière circulaire r_in."""
         h = self.pad_size / 2.0
         squares = [box(x - h, y - h, x + h, y + h)
                   for pid, (x, y, r_in, r_out, sx, sy) in
@@ -209,15 +463,13 @@ class ViewerType2:
     def _build_background_patches(self):
         """Construit une fois le fond neutre de repère : chaque pad
         cartésien individuellement (visible même non touché), les pads de
-        transition (disque moins carrés, cf. _compute_transition_shapes) et
-        les vrais anneaux périphériques (Wedge)."""
+        transition (disque moins carrés) et les vrais anneaux périphériques (Wedge)."""
         self.bg_patches = []
         h = self.pad_size / 2.0
 
         for pid, g in self.pad_geom.items():
             x, y, r_in, r_out, sx, sy = g
             if r_out == 0.0:
-                # Pad cartésien : affiché individuellement, même non touché
                 self.bg_patches.append(mpatches.Rectangle(
                     (x - h, y - h), self.pad_size, self.pad_size))
             elif pid in self.trans_paths:
@@ -244,11 +496,10 @@ class ViewerType2:
                                    zorder=1)
             self.ax_pad.add_collection(pc_bg)
 
-        # --- Plan d'anode 2D (H + L) ---
-        # Agrège d'abord les charges brutes par pad_id (H + L confondus) :
-        # un pad touché par les deux fragments doit afficher leur somme,
-        # comme le ferait l'électronique réelle sur un canal commun.
-        combined = {}  # pad_id -> [q_sum, px, py]
+        # --- Plan d'anode 2D ---
+        # Un pad partagé est écrit à l'identique (charge H+L) dans H et dans L :
+        # on garde la valeur une seule fois (pas de somme).
+        combined = {}  # pad_id -> [q, px, py]
         for frag in ("H", "L"):
             px  = np.array(self.f[f"/{frag}/px"][i])
             py  = np.array(self.f[f"/{frag}/py"][i])
@@ -259,9 +510,11 @@ class ViewerType2:
                 key = int(pid[k])
                 if key not in combined:
                     combined[key] = [0.0, px[k], py[k]]
-                combined[key][0] += pq[k]
+                combined[key][0] = pq[k]
 
-        # Seuil appliqué sur la charge combinée (comportement d'un vrai canal)
+        self.pad_pos = {pid: (v[1], v[2]) for pid, v in combined.items()}   # centres lus dans le .h5
+        
+        # Seuil d'affichage appliqué sur la charge du pad
         pad_totals = {pid: v[0] for pid, v in combined.items()}
         combined = {pid: v for pid, v in combined.items() if v[0] >= self.threshold}
 
@@ -286,13 +539,10 @@ class ViewerType2:
 
                 if is_ring:
                     if pad_id in self.trans_paths:
-                        # Pad de transition : contour exact (quart de disque
-                        # moins les carrés cartésiens qui l'empiètent)
                         patch = mpatches.PathPatch(self.trans_paths[pad_id])
                         ring_patches.append(patch)
                         ring_q.append(q)
                     else:
-                        # Vrai anneau périphérique : quart de cercle exact (Wedge)
                         if   sx > 0 and sy > 0: theta1, theta2 = 0, 90
                         elif sx < 0 and sy > 0: theta1, theta2 = 90, 180
                         elif sx < 0 and sy < 0: theta1, theta2 = 180, 270
@@ -302,7 +552,6 @@ class ViewerType2:
                         ring_patches.append(w)
                         ring_q.append(q)
                 else:
-                    # Pad carré
                     h = self.pad_size / 2.0
                     sq_patches.append(mpatches.Rectangle(
                         (px_k - h, py_k - h), self.pad_size, self.pad_size))
@@ -338,11 +587,14 @@ class ViewerType2:
 
         self.ax_pad.set_xlabel("x (cm)")
         self.ax_pad.set_ylabel("y (cm)")
-        self.ax_pad.set_xlim(-10, 10)
-        self.ax_pad.set_ylim(-10, 10)
+        self.ax_pad.set_xlim(-self.r_view, self.r_view)
+        self.ax_pad.set_ylim(-self.r_view, self.r_view)
         self.ax_pad.set_aspect("equal")
-        self.ax_pad.set_title(
-            f"Anode — Event {i}/{self.n_events-1}  |  seuil Q>{self.threshold:.0f} e⁻")
+        title = f"Anode — Event {i}/{self.n_events-1}  |  seuil Q>{self.threshold:.0f} e⁻"
+        ke_txt = self._ke_lines(i, pad_totals)
+        if ke_txt:
+            title += "\n" + ke_txt
+        self.ax_pad.set_title(title, fontsize=7.5)
         self.ax_pad.legend(fontsize=8)
 
         self._draw_qt(i, pad_totals)
@@ -354,11 +606,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("h5file")
     parser.add_argument("--event",    type=int,  default=0)
-    parser.add_argument("--pad_file", type=str,  default="my_pad.txt",
+    parser.add_argument("--pad_file", type=str,  required=True,
                        help="my_pad.txt pour afficher la géométrie des anneaux (défaut: my_pad.txt)")
+    parser.add_argument("--old", type=str, default=None,
+                       help="ancien fichier h5 (sans induction) à superposer, même événements")
     args = parser.parse_args()
 
-    ViewerType2(args.h5file, pad_file=args.pad_file, start_event=args.event)
+    ViewerType2(args.h5file, pad_file=args.pad_file, start_event=args.event, old_path=args.old)
 
 
 if __name__ == "__main__":

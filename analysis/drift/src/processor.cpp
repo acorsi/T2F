@@ -6,6 +6,11 @@ Processor::Processor(const DetectorConfig& cfg, uint64_t seed)
     : m_cfg(cfg), m_rng(seed)
 {}
 
+void Processor::reseed(uint64_t seed) {
+    m_rng.seed(seed);
+    m_N01.reset();
+}
+
 void Processor::draw_vertex(double& va, double& vb) {
     // type1 : (vx, vy) dans le plan XY
     // type2 : (vx, vz) dans le plan XZ (vertex en y=0)

@@ -1,0 +1,2 @@
+/usr/bin/clang++ -O3 -std=c++11 -Wall -Wextra -o test_table test_table.cpp psi_table.cpp psi_builder.cpp weighting_potential.cpp
+./test_table

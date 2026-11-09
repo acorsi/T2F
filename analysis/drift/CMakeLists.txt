@@ -14,6 +14,11 @@ endif()
 
 project(T2F_drift CXX)
 
+# Sans type de build, CMake ne met aucune optimisation : on force Release par défaut.
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Type de build" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -42,11 +47,19 @@ add_library(t2f_lib
     src/h5writer.cpp
     src/processor.cpp
     src/pad_geometry.cpp
+    src/weighting_potential.cpp
+    src/psi_builder.cpp
+    src/psi_table.cpp
 )
 target_link_libraries(t2f_lib
     ${HDF5_LIBRARIES}
     OpenMP::OpenMP_CXX
 )
+
+option(T2F_PROF "Compteurs et chronos de profil" OFF)
+if(T2F_PROF)
+    target_compile_definitions(t2f_lib PUBLIC T2F_PROF)
+endif()
 
 # --- Exécutables ---
 add_executable(process src/main.cpp)

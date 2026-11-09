@@ -5,6 +5,7 @@
 #include <vector>
 #include <stdexcept>
 #include <cstdint>
+#include <type_traits>
 
 // ---------------------------------------------------------------------------
 // H5Writer — écriture générique de fichiers HDF5 (scalaires 1D + VLEN)
@@ -36,6 +37,7 @@ public:
     template<typename T>
     void add_dataset(const std::string& dataset_path, hsize_t size = 0);
 
+    template<typename T>
     void add_vlen_dataset(const std::string& dataset_path, hsize_t size = 0);
 
     // -----------------------------------------------------------------------
@@ -54,13 +56,15 @@ public:
     // Écriture VLEN
     // -----------------------------------------------------------------------
 
-    void write_vlen_chunk(const std::string& dataset_path,
-                          const std::vector<std::vector<double>>& data,
-                          hsize_t start);
-
-    void write_vlen_all(const std::string& dataset_path,
-                        const std::vector<std::vector<double>>& data);
-
+  template<typename T>
+  void write_vlen_chunk(const std::string& dataset_path,
+			const std::vector<std::vector<T> >& data,
+			hsize_t start);
+  
+  template<typename T>
+  void write_vlen_all(const std::string& dataset_path,
+		      const std::vector<std::vector<T> >& data);
+  
     // -----------------------------------------------------------------------
     // Écriture d'attributs HDF5 (scalaires sur groupes ou datasets)
     // Le groupe est créé automatiquement s'il n'existe pas.
@@ -170,4 +174,61 @@ void H5Writer::write_attribute(const std::string& obj_path,
     if (status < 0)
         throw std::runtime_error("H5Writer::write_attribute : H5Awrite échoué sur "
                                  + obj_path + "/" + attr_name);
+}
+
+
+template<typename T>
+void H5Writer::add_vlen_dataset(const std::string& path, hsize_t size) {
+    ensure_groups(path);
+
+    hid_t vlen_type = H5Tvlen_create(native_type<T>());
+    hsize_t dims    = (size > 0) ? size : m_n_events;
+    hsize_t maxdims = dims;
+    hid_t space = H5Screate_simple(1, &dims, &maxdims);
+    hid_t dset  = H5Dcreate2(m_file_id, path.c_str(), vlen_type, space,
+                             H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Tclose(vlen_type);
+    if (dset < 0) {
+        H5Sclose(space);
+        throw std::runtime_error("H5Writer::add_vlen_dataset : échec création " + path);
+    }
+    H5Dclose(dset);
+    H5Sclose(space);
+}
+
+template<typename T>
+void H5Writer::write_vlen_chunk(const std::string& path,
+                                const std::vector<std::vector<T> >& data,
+                                hsize_t start)
+{
+    hid_t dset   = open_dataset(path);
+    hid_t fspace = H5Dget_space(dset);
+
+    hsize_t count  = data.size();
+    hsize_t offset = start;
+    H5Sselect_hyperslab(fspace, H5S_SELECT_SET, &offset, nullptr, &count, nullptr);
+    hid_t mspace = H5Screate_simple(1, &count, nullptr);
+
+    std::vector<hvl_t> buf(count);
+    for (hsize_t i = 0; i < count; ++i) {
+        buf[i].len = data[i].size();
+        buf[i].p   = const_cast<T*>(data[i].data());
+    }
+
+    hid_t mem_type = H5Tvlen_create(native_type<T>());
+    herr_t status  = H5Dwrite(dset, mem_type, mspace, fspace, H5P_DEFAULT, buf.data());
+    H5Tclose(mem_type);
+    H5Sclose(mspace);
+    H5Sclose(fspace);
+    H5Dclose(dset);
+
+    if (status < 0)
+        throw std::runtime_error("H5Writer::write_vlen_chunk : H5Dwrite échoué sur " + path);
+}
+
+template<typename T>
+void H5Writer::write_vlen_all(const std::string& path,
+                              const std::vector<std::vector<T> >& data)
+{
+    write_vlen_chunk<T>(path, data, 0);
 }

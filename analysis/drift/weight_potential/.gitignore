@@ -1,0 +1,9 @@
+simulation/.cache/
+test_phi
+test_psi
+test_table
+dump_patterns
+dump_film
+*.csv
+*.png
+*.gif

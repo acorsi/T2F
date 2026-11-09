@@ -24,27 +24,54 @@ struct DetectorConfig {
 
     // --- Géométrie ---
     double dkg          = 20.0;   // distance cathode → grille (cm)
-    double dga          =  1.0;   // distance grille → anode (cm)
+    double dga          =  0.3;   // distance grille → anode (cm)
     double vertex_r_max =  1.0;   // rayon max du vertex dans le plan XZ (cm)
     double step_size    =  0.02;  // pas de la trace (cm)
 
     // --- Gaz / diffusion ---
     double Fano     = 0.2;      // Facteur de Fano pour fluctuation du nombre d'électrons  
     double W        = 26.0e-6;  // énergie par paire e⁻/ion (MeV)
-    double D_T      = 0.03;     // coefficient diffusion transverse   (cm/√cm)
-    double D_L      = 0.015;    // coefficient diffusion longitudinale (cm/√cm)
-    double v_e      = 0.005;    // vitesse de dérive (cm/ns)
-    double delta_t  = 10.0;     // pas temporel (ns)
-    double seuil_qt = 0.0;      // seuil Q(t) en n_electrons
 
+    /***
+     *Coeff Gaz pour P10
+     ***/
+  double DT_kg    = 0.06;     // coefficient diffusion transverse   (cm/√cm)
+  double DT_ga    = 0.05;        // coefficient diffusion transverse   (cm/√cm)
+  double DL_kg    = 0.035;     // coefficient diffusion longitudinale (cm/√cm)
+  double DL_ga    = 0.02;        // coefficient diffusion longitudinale (cm/√cm)   
+  double ve_kg    = 0.0055;   // vitesse de dérive (cm/ns) cathode-grille 
+  double ve_ga    = 0.002;    // vitesse de dérive (cm/ns) grille-anode
+  double delta_t  = 10.0;     // pas temporel (ns)
+
+    // Seuils de lecture sur qt (électrons par bin), comme un déclenchement d'oscilloscope.
+    // Un bin est gardé si qt > seuil_qt_pos  OU  qt < seuil_qt_neg.
+    //   - les deux côtés : seuil_qt_pos = +200, seuil_qt_neg = -200 (défaut)
+    //   - seulement le lobe négatif : seuil_qt_pos = 1e300
+    //   - seulement le lobe positif : seuil_qt_neg = -1e300
+    // Convention de signe : la charge collectée sur un pad est positive.
+    double seuil_qt_pos =  200.0;
+    double seuil_qt_neg = -200.0;
+
+    // Rognage de la plage écrite d'un pad : on garde du premier au dernier bin avec |qt| > eps_qt
+    double eps_qt = 10.0;
+    
     // --- Helpers ---
     double z_grid()  const { return dkg; }
     double z_anode() const { return dkg + dga; }
-
-  double sigma_T(double z) const { return D_T * std::sqrt(drift_distance(z)); }
-  double sigma_L(double z) const { return D_L * std::sqrt(drift_distance(z)); }
   
-  int n_bins() const { return static_cast<int>( std::ceil((2.0 * dkg / v_e + 200.0) / delta_t)) + 1 ;}
+    double sigma_T(double z) const { return DT_kg * std::sqrt(drift_distance(z)); }
+    double sigma_L(double z) const { return DL_kg * std::sqrt(drift_distance(z)); }
+    double sigma_T_gap(double z, double s) const { double a = sigma_T(z); return std::sqrt(a*a + DT_ga*DT_ga*s);} 
+ 
+    double t_grid(double z) const { return drift_distance(z) / ve_kg; }
+    double T_gap() const { return dga / ve_ga ; }
+    // Queue du signal après l'arrivée à la grille (ns). Fixée par derive_params avant tout calcul ;
+    // 450 ns = ancienne valeur fixe, gardée comme défaut.
+    double tau_tail_ns = 450.0;
+    // Nombre de bins de delta_t depuis la fission (t = 0). Le signal d'un voxel s'étend
+    // jusqu'à t_grid(z) + tau_tail_ns (fin de la table PsiTable + un pas, fixé par derive_params).
+    // Le plus grand t_grid est celui d'un voxel à la cathode : dkg / ve_kg.
+    int n_bins() const { return static_cast<int>( std::ceil((dkg / ve_kg + tau_tail_ns) / delta_t)) + 1 ;}
   
   double drift_distance(double z) const {
     return dkg - z;  // dérive vers z>0, z ∈ [0, dkg]
