@@ -5,6 +5,7 @@
 #include "pad_geometry.hpp"
 #include "prof.hpp"
 #include "config_file.hpp"
+#include "derived_params.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -71,7 +72,7 @@ struct RunParams {
 
 // Lit toutes les cles du fichier. Les valeurs absentes gardent le defaut de
 // DetectorConfig / PadPlaneParams / RunParams. Une cle inconnue est une erreur.
-static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPlaneParams& pp)
+static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPlaneParams& pp, TableOptions& to)
 {
     // --- fichiers (obligatoires) ---
     R.in_path  = c.get_string("input_file");
@@ -117,10 +118,23 @@ static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPla
     pp.reach_pitch  = c.get_double("reach_pitch",  pp.reach_pitch);
     pp.bound_margin = c.get_double("bound_margin", pp.bound_margin);
 
+    // --- table d'induction (0 = automatique) et controles ---
+    to.n_d          = c.get_int   ("table_n_d",      10);
+    to.n_img        = c.get_int   ("table_n_img",    10);
+    to.m_cells      = c.get_int   ("table_m_cells",  0);
+    to.step_out     = c.get_double("table_step_out", 0.0);
+    to.r_src        = c.get_double("table_r_src",    0.0);
+    to.max_table_mb = c.get_double("max_table_mb",   500.0);
+    to.ignore       = c.get_string("ignore",         "");
+
     // une cle jamais lue = faute de frappe : on s'arrete
     c.check_unused();
 
     // --- verifications elementaires ---
+    if (to.n_d < 4)                              throw std::runtime_error("table_n_d doit etre >= 4");
+    if (to.n_img < 1)                            throw std::runtime_error("table_n_img doit etre >= 1");
+    if (to.step_out < 0.0 || to.r_src < 0.0 || to.m_cells < 0)
+                                                 throw std::runtime_error("table_step_out, table_r_src, table_m_cells doivent etre >= 0");
     if (R.n_events < 0)                          throw std::runtime_error("n_events doit etre >= 0");
     if (R.n_threads < 1)                         throw std::runtime_error("n_threads doit etre >= 1");
     if (R.chunk_size < 1)                        throw std::runtime_error("chunk_size doit etre >= 1");
@@ -152,10 +166,11 @@ int main(int argc, char* argv[]) {
     RunParams      R;
     DetectorConfig cfg;
     PadPlaneParams pParam;
+    TableOptions   topt;
     try {
         conf.load(argv[1]);
         for (int a = 2; a < argc; ++a) conf.set_override(argv[a]);
-        read_config(conf, R, cfg, pParam);
+        read_config(conf, R, cfg, pParam, topt);
     } catch (const std::exception& e) {
         std::cerr << "Erreur de configuration : " << e.what() << "\n";
         return 1;
@@ -198,8 +213,30 @@ int main(int argc, char* argv[]) {
 
     const std::vector<double> empty_vec;      // trace vide, en lecture seule (thread-safe)
 
+    // --- Parametres derives et controles (arret explicite si un controle echoue) ---
+    CheckList     checks;
+    DerivedParams D;
+    try {
+        checks.set_ignored(topt.ignore);
+        D = derive_params(cfg, pParam, topt, checks);
+        print_derived(D, cfg);
+        checks.finish();
+    } catch (const std::exception& e) {
+        std::cerr << "\nArret : " << e.what() << "\n";
+        return 1;
+    }
+    cfg.tau_tail_ns = D.tau_tail_ns;   // n_bins() en depend : a fixer avant les Processor et les tampons
+
     // --- Plan de pads ---
-    PadPlane plane(pParam, cfg);   // construit aussi la table d'induction (~3 s, ~80 Mo)
+    PadPlane plane(pParam, cfg, D.tp, D.reach_cm);   // construit aussi la table d'induction
+
+    try {
+        check_table(plane.table(), D, checks);
+        checks.finish();
+    } catch (const std::exception& e) {
+        std::cerr << "\nArret : " << e.what() << "\n";
+        return 1;
+    }
 
     std::ofstream pad_file("my_pad.txt");
     pad_file << "# id x y r_in r_out\n";
@@ -255,6 +292,17 @@ int main(int argc, char* argv[]) {
     writer.write_attribute<double>("/metadata", "reach_pitch", pParam.reach_pitch);
     writer.write_attribute<double>("/metadata", "bound_margin", pParam.bound_margin);
     writer.write_attribute<int>("/metadata", "n_tau", plane.table().n_tau());
+    writer.write_attribute<double>("/metadata", "tau_tail_ns",    cfg.tau_tail_ns);
+    writer.write_attribute<double>("/metadata", "dtau",           D.dtau);
+    writer.write_attribute<int>   ("/metadata", "n_h",            D.n_h);
+    writer.write_attribute<int>   ("/metadata", "table_n_out",    D.tp.n_out);
+    writer.write_attribute<double>("/metadata", "table_step_out", D.tp.step_out);
+    writer.write_attribute<double>("/metadata", "table_r_src",    D.tp.r_src);
+    writer.write_attribute<int>   ("/metadata", "table_m_cells",  D.tp.m_cells);
+    writer.write_attribute<int>   ("/metadata", "table_n_img",    D.tp.n_img);
+    writer.write_attribute<int>   ("/metadata", "table_n_d",      D.tp.n_d);
+    writer.write_attribute<double>("/metadata", "reach_cm",       D.reach_cm);
+    writer.write_attribute_string("/metadata", "ignored_checks",  checks.ignored_text());
     writer.write_attribute<int>("/metadata", "n_pads", (int)plane.pads().size());
     writer.write_attribute<double>("/metadata", "eps_qt", cfg.eps_qt);
     

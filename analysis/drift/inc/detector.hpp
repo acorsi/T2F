@@ -65,10 +65,13 @@ struct DetectorConfig {
  
     double t_grid(double z) const { return drift_distance(z) / ve_kg; }
     double T_gap() const { return dga / ve_ga ; }
+    // Queue du signal après l'arrivée à la grille (ns). Fixée par derive_params avant tout calcul ;
+    // 450 ns = ancienne valeur fixe, gardée comme défaut.
+    double tau_tail_ns = 450.0;
     // Nombre de bins de delta_t depuis la fission (t = 0). Le signal d'un voxel s'étend
-    // jusqu'à t_grid(z) + 402.5 ns (fin de la table PsiTable) ; on prend 450 ns de marge.
+    // jusqu'à t_grid(z) + tau_tail_ns (fin de la table PsiTable + un pas, fixé par derive_params).
     // Le plus grand t_grid est celui d'un voxel à la cathode : dkg / ve_kg.
-    int n_bins() const { return static_cast<int>( std::ceil((dkg / ve_kg + 450.0) / delta_t)) + 1 ;}
+    int n_bins() const { return static_cast<int>( std::ceil((dkg / ve_kg + tau_tail_ns) / delta_t)) + 1 ;}
   
   double drift_distance(double z) const {
     return dkg - z;  // dérive vers z>0, z ∈ [0, dkg]

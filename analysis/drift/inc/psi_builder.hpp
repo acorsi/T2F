@@ -43,12 +43,14 @@ public:
     double step()    const { return m_step; }
     int    n_cells() const { return m_nc; }
     int    n_h()     const { return m_nh; }
+    // max de |phi| sur les cellules du bord (r_src - 2 pas < r <= r_src), tous niveaux de hauteur
+    double edge_max() const;
 
     // pointeur sur la ligne (niveau l, colonne j), de longueur n_cells()
     const double* row(int l, int j) const { return &m_data[(l * m_nc + j) * m_nc]; }
 
 private:
-    double m_a, m_g, m_step;
+    double m_a, m_g, m_step, m_rsrc;
     int    m_nc, m_nh;
     std::vector<double> m_data;
 };

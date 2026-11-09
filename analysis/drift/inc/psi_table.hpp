@@ -39,9 +39,9 @@ struct TableParams {
     double r_src;      // rayon de la source (cm)
 };
 
-// Valeurs par défaut tirées de la configuration du détecteur.
-// pitch = pad_size + inter_pad (cm).
-TableParams default_table_params(const DetectorConfig& cfg, double pitch);
+// Plage des indices en tau de la table (tau = m * dtau) : m_min <= 0 ... m_max.
+// Partagée par PsiTable et derive_params pour que les deux restent d'accord.
+void table_time_range(const TableParams& tp, double dtau, int& m_min, int& m_max);
 
 class PsiTable {
 public:
@@ -58,6 +58,10 @@ public:
     // Au-delà de u_max ou v_max, Psi est pris nul : à ne pas utiliser plus loin.
     double u_max()   const { return (m_tp.n_out - 1) * m_tp.step_out; }
     size_t memory_bytes() const { return m_data.size() * sizeof(float); }
+    int    n_out()    const { return m_tp.n_out; }
+    double step_out() const { return m_tp.step_out; }
+    // max de |phi| au bord de la source (doit etre ~0 : sinon la source est tronquee trop tot)
+    double phi_edge_max() const { return m_phi_edge; }
 
     // sigma transverse et étalement temporel du nuage à la grille, pour la distance d
     double sigma_T(double d) const;
@@ -109,7 +113,8 @@ private:
     double m_dtau;
     int    m_min, m_max;
     double m_c0;                 // DT_ga^2 g + plancher^2 : valeur de sigma_anode^2 en d = 0
-    double m_x0, m_dx;           // x = ln(sigma_anode) : x du noeud 0 et pas entre noeuds
+    double m_x0, m_dx;
+    double m_phi_edge;           // x = ln(sigma_anode) : x du noeud 0 et pas entre noeuds
     std::vector<float> m_data; // [ ((k * n_out + i) * n_out + j) * n_tau + n ]
     std::vector<float> m_dmax;
     

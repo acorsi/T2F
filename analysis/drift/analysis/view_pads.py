@@ -107,6 +107,17 @@ class ViewerType2:
                 print(f"[view_type2] pad_file '{pad_file}' introuvable — "
                       "les anneaux ne seront pas affichés correctement.")
 
+        self.r_view = 10.0
+        if self.pad_geom:
+            self._check_pad_file()
+            r = 0.0
+            for pid, (px, py, r_in, r_out, sx, sy) in self.pad_geom.items():
+                if r_out > 0.0:
+                    r = max(r, r_out)
+                else:
+                    r = max(r, np.hypot(px, py) + self.pad_size)
+            self.r_view = float(np.ceil(r))
+                
         self.fig = plt.figure(figsize=(18, 7))
         self.ax_pad  = self.fig.add_axes([0.04, 0.08, 0.38, 0.80])
         self.ax_qt   = self.fig.add_axes([0.52, 0.55, 0.43, 0.37])
@@ -140,8 +151,32 @@ class ViewerType2:
         elif event.key == "q":
             plt.close(self.fig)
 
+    def _check_pad_file(self):
+        """Avertit si le fichier de pads ne correspond pas à la sortie .h5."""
+        # 1) pas des lignes de pads = pad_size + inter_pad ?
+        ys = sorted(set(round(g[1], 6) for g in self.pad_geom.values() if g[3] == 0.0))
+        if len(ys) > 1:
+            pitch_file = min(b - a for a, b in zip(ys[:-1], ys[1:]))
+            pitch_h5 = self.pad_size + self.inter_pad
+            if abs(pitch_file - pitch_h5) > 1e-4:
+                print("[view_type2] ATTENTION : pas de pads du fichier %.4f cm, du .h5 %.4f cm : "
+                      "mauvais --pad_file ?" % (pitch_file, pitch_h5))
+        # 2) tous les pad_id écrits (200 premiers événements) existent-ils dans le fichier ?
+        ids = set()
+        for frag in ("H", "L"):
+            for arr in self.f["/%s/pid" % frag][:200]:
+                ids.update(int(p) for p in arr)
+        manquants = [p for p in ids if p not in self.pad_geom]
+        if manquants:
+            print("[view_type2] ATTENTION : %d pad_id du .h5 absents du fichier de pads "
+                  "(ex. %s) : mauvais --pad_file ?" % (len(manquants), manquants[:5]))    
+            
     def _pad_at(self, x, y):
         """Identifiant du pad situé au point (x, y) du plan d'anode, ou None."""
+        h0 = self.pad_size / 2.0
+        for pid, (px, py) in getattr(self, "pad_pos", {}).items():
+            if abs(x - px) <= h0 and abs(y - py) <= h0:
+                return pid
         if not self.pad_geom:
             return None
         h = self.pad_size / 2.0
@@ -321,15 +356,23 @@ class ViewerType2:
         self.ax_Q.set_xlabel("t (ns)")
         self.ax_Q.set_ylabel("Σ qt écrits (e⁻)  ; point = pq final")
 
+
         # contours colorés sur le plan d'anode
+        h = self.pad_size / 2.0
         for n, pad_id in enumerate(ids):
             g = self.pad_geom.get(pad_id) if self.pad_geom else None
-            patch = self._pad_patch(pad_id, *(g[:2] if g is not None else (0.0, 0.0)))
+            if g is not None and g[3] > 0.0:          # anneau / pad de transition : géométrie du fichier
+                patch = self._pad_patch(pad_id)
+            elif pad_id in self.pad_pos:               # pad carré : centre lu dans le .h5
+                x, y = self.pad_pos[pad_id]
+                patch = mpatches.Rectangle((x - h, y - h), self.pad_size, self.pad_size)
+            else:
+                continue                               # pad absent de l'événement courant (nouveau/ancien)
             patch.set_facecolor("none")
             patch.set_edgecolor(COULEURS[n % len(COULEURS)])
             patch.set_linewidth(2.2)
             patch.set_zorder(8)
-            self.ax_pad.add_patch(patch)
+            self.ax_pad.add_patch(patch)        
 
     def _combined_qt_mode(self, i, mode, f=None, dt=None):
         old = self.mode
@@ -469,6 +512,8 @@ class ViewerType2:
                     combined[key] = [0.0, px[k], py[k]]
                 combined[key][0] = pq[k]
 
+        self.pad_pos = {pid: (v[1], v[2]) for pid, v in combined.items()}   # centres lus dans le .h5
+        
         # Seuil d'affichage appliqué sur la charge du pad
         pad_totals = {pid: v[0] for pid, v in combined.items()}
         combined = {pid: v for pid, v in combined.items() if v[0] >= self.threshold}
@@ -542,8 +587,8 @@ class ViewerType2:
 
         self.ax_pad.set_xlabel("x (cm)")
         self.ax_pad.set_ylabel("y (cm)")
-        self.ax_pad.set_xlim(-10, 10)
-        self.ax_pad.set_ylim(-10, 10)
+        self.ax_pad.set_xlim(-self.r_view, self.r_view)
+        self.ax_pad.set_ylim(-self.r_view, self.r_view)
         self.ax_pad.set_aspect("equal")
         title = f"Anode — Event {i}/{self.n_events-1}  |  seuil Q>{self.threshold:.0f} e⁻"
         ke_txt = self._ke_lines(i, pad_totals)
@@ -561,7 +606,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("h5file")
     parser.add_argument("--event",    type=int,  default=0)
-    parser.add_argument("--pad_file", type=str,  default="my_pad.txt",
+    parser.add_argument("--pad_file", type=str,  required=True,
                        help="my_pad.txt pour afficher la géométrie des anneaux (défaut: my_pad.txt)")
     parser.add_argument("--old", type=str, default=None,
                        help="ancien fichier h5 (sans induction) à superposer, même événements")

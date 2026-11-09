@@ -88,7 +88,7 @@ void smooth_level(const PhiSource& src, int l, const Weights1D& W,
 // ---------------------------------------------------------------------------
 
 PhiSource::PhiSource(double a, double g, int n_img, int m_cells, double r_src, int n_h)
-    : m_a(a), m_g(g), m_step(a / m_cells), m_nc(0), m_nh(n_h)
+    : m_a(a), m_g(g), m_step(a / m_cells), m_rsrc(r_src), m_nc(0), m_nh(n_h)
 {
     m_nc = (int)std::ceil(r_src / m_step);
     m_data.assign((size_t)(n_h + 1) * m_nc * m_nc, 0.0);
@@ -198,4 +198,27 @@ void build_psi(const PhiSource& src, const PsiParams& P, std::vector<double>& ps
             sor[n] = s;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// edge_max : controle de la troncature de la source
+// ---------------------------------------------------------------------------
+
+double PhiSource::edge_max() const
+{
+    const double r_lo = m_rsrc - 2.0 * m_step;
+    double mx = 0.0;
+    for (int l = 0; l <= m_nh; ++l) {
+        for (int j = 0; j < m_nc; ++j) {
+            double x = (j + 0.5) * m_step;
+            for (int k = 0; k < m_nc; ++k) {
+                double y = (k + 0.5) * m_step;
+                double r2 = x * x + y * y;
+                if (r2 > m_rsrc * m_rsrc || r2 < r_lo * r_lo) continue;
+                double v = std::fabs(m_data[((size_t)l * m_nc + j) * m_nc + k]);
+                if (v > mx) mx = v;
+            }
+        }
+    }
+    return mx;
 }

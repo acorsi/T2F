@@ -54,7 +54,7 @@ struct PadPlaneParams {
     double y_offset     = 0.0;   // doit rester 0 : la table suppose des tuiles jointives en y = 0
 
   //Paramètres liés à l'induction - Ne pas changer sans connaissance.
-    double reach_pitch  = 4.5;  // portée de l induction autour du voxel, en pitchs (<= 6.1)
+    double reach_pitch  = 4.5;  // portée de l'induction autour du voxel, en pitchs (la table est dimensionnée dessus)
     double bound_margin = 1.3;  // marge sur la borne de |qt| par cellule ; <= 0 : pas de sélection par le seuil de lecture
 };
 
@@ -71,7 +71,8 @@ struct PadPlaneParams {
 
 class PadPlane {
 public:
-    PadPlane(const PadPlaneParams& params, const DetectorConfig& cfg);
+    PadPlane(const PadPlaneParams& params, const DetectorConfig& cfg,
+             const TableParams& tp, double reach_cm);   // tp et reach_cm : voir derive_params
 
     const std::vector<Pad>& pads() const { return m_pads; }
 

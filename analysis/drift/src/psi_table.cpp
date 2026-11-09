@@ -42,35 +42,16 @@ void accumulate_generic(const float* const* ptr, const float* wgt, int ns, int n
 
 } // namespace
 
-TableParams default_table_params(const DetectorConfig& cfg, double pitch) {
-    TableParams tp;
-    tp.a        = 0.5 * pitch;
-    tp.g        = cfg.dga;
-    tp.ve_kg    = cfg.ve_kg;
-    tp.ve_ga    = cfg.ve_ga;
-    tp.DT_kg    = cfg.DT_kg;
-    tp.DT_ga    = cfg.DT_ga;
-    tp.DL_kg    = cfg.DL_kg;
-    tp.DL_ga    = cfg.DL_ga;
-    tp.d_max    = cfg.dkg;
-    tp.n_d      = 10;
-    tp.n_out    = 100;
-    tp.step_out = pitch / 16.0;
-    tp.n_img    = 10;
-    tp.m_cells  = 8;
-    tp.r_src = 2.2;
-
-    double T = cfg.dga / cfg.ve_ga;                       // temps de collecte dans le gap
-    tp.n_h = (int)(T / cfg.delta_t + 0.5);
-    if (tp.n_h < 2) tp.n_h = 2;
-    if (std::fabs(T / cfg.delta_t - tp.n_h) > 1.0e-6)
-      std::cerr << "ATTENTION : dga/(ve_ga*delta_t) = " << T / cfg.delta_t
-		<< " n'est pas entier : voie lente et borne de selection a revoir\n";
-    double s_kg = cfg.DL_kg * std::sqrt(cfg.dkg) / cfg.ve_kg;
-    double s_ga = cfg.DL_ga * std::sqrt(cfg.dga) / cfg.ve_ga;
-    tp.tau_max_ns = T + 5.0 * std::sqrt(s_kg * s_kg + s_ga * s_ga);
-
-    return tp;
+void table_time_range(const TableParams& tp, double dtau, int& m_min, int& m_max)
+{
+    // sigma_t a d_max : diffusion longitudinale cathode-grille et gap, en quadrature
+    double s_kg = tp.DL_kg * std::sqrt(tp.d_max) / tp.ve_kg;
+    double s_ga = tp.DL_ga * std::sqrt(tp.g) / tp.ve_ga;
+    double st_max = std::sqrt(s_kg * s_kg + s_ga * s_ga);
+    int jmax = (int)std::ceil(5.0 * st_max / dtau);
+    m_min = -(int)std::ceil(3.5 * st_max / dtau);
+    m_max = (int)std::ceil(tp.tau_max_ns / dtau);
+    if (m_max < tp.n_h + jmax + 2) m_max = tp.n_h + jmax + 2;
 }
 
 double PsiTable::sigma_T(double d) const {
@@ -92,7 +73,7 @@ double PsiTable::d_node(int k) const {
 }
 
 PsiTable::PsiTable(const TableParams& tp)
-    : m_tp(tp), m_dtau(0.0), m_min(0), m_max(0), m_c0(0.0), m_x0(0.0), m_dx(0.0)
+    : m_tp(tp), m_dtau(0.0), m_min(0), m_max(0), m_c0(0.0), m_x0(0.0), m_dx(0.0), m_phi_edge(0.0)
 {
     if (tp.n_d < 2) throw std::runtime_error("PsiTable : n_d doit etre >= 2");
 
@@ -100,11 +81,7 @@ PsiTable::PsiTable(const TableParams& tp)
 
     // Plage en tau : on descend jusqu'à -3.5 sigma_t (là Psi < 1e-6) et on monte
     // jusqu'à tau_max_ns, ou plus loin si le plateau n'est pas atteint.
-    double st_max = sigma_t(tp.d_max);
-    int jmax = (int)std::ceil(5.0 * st_max / m_dtau);
-    m_min = -(int)std::ceil(3.5 * st_max / m_dtau);
-    m_max = (int)std::ceil(tp.tau_max_ns / m_dtau);
-    if (m_max < tp.n_h + jmax + 2) m_max = tp.n_h + jmax + 2;
+    table_time_range(tp, m_dtau, m_min, m_max);
 
     // Noeuds en d : équidistants en x = ln(sigma_anode(d)).
     // Le plancher (une demi-cellule de la source) évite ln(0) si DT_ga = 0.
@@ -119,6 +96,7 @@ PsiTable::PsiTable(const TableParams& tp)
     m_data.assign((size_t)tp.n_d * taille_d, 0.0f);
 
     PhiSource src(tp.a, tp.g, tp.n_img, tp.m_cells, tp.r_src, tp.n_h);
+    m_phi_edge = src.edge_max();
 
     std::vector<double> psi;
     for (int k = 0; k < tp.n_d; ++k) {

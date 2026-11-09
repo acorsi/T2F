@@ -51,18 +51,20 @@ inline int quadrant_index(double x, double y) {
 // Constructeur
 // ---------------------------------------------------------------------------
 
-PadPlane::PadPlane(const PadPlaneParams& params, const DetectorConfig& cfg)
+PadPlane::PadPlane(const PadPlaneParams& params, const DetectorConfig& /*cfg*/,
+                   const TableParams& tp, double reach_cm)
     : m_params(params),
       m_pitch(params.pad_size + params.inter_pad),
-      m_reach(params.reach_pitch * (params.pad_size + params.inter_pad)),
-      m_table(default_table_params(cfg, params.pad_size + params.inter_pad)),
+      m_reach(reach_cm),
+      m_table(tp),
       m_nrows(0), m_ncols(0)
 {
     if (std::fabs(params.y_offset) > 1.0e-12)
         throw std::runtime_error("PadPlane : y_offset doit etre 0 (la table suppose des "
                                  "tuiles jointives en y = 0)");
-    if (m_reach > m_table.u_max())
-        throw std::runtime_error("PadPlane : reach_pitch depasse la portee de la table");
+    // le stencil cubique lit jusqu'a 2 noeuds au-dela de la portee
+    if (m_reach + 2.0 * m_table.step_out() > m_table.u_max() + 1.0e-9)
+        throw std::runtime_error("PadPlane : la table ne couvre pas la portee d'induction (reach + 2 pas)");
     build_anode();
     build_cells();
 }
@@ -94,7 +96,7 @@ void PadPlane::build_anode() {
     const double r_active    = m_params.r_active;
     const int    n_rings     = m_params.n_rings;
     const double half_pad    = pad_size / 2.0;
-    const double ring_width  = (r_active - r_trans) / n_rings;
+    const double ring_width  = (n_rings > 0) ? (r_active - r_trans) / n_rings : 0.0;
     int id = 0;
 
     // --- 1. Zone quinconce ---
@@ -123,6 +125,8 @@ void PadPlane::build_anode() {
         }
     }
 
+    // n_rings = 0 : pas d'anneaux, toute l'anode est en pads carres (la charge hors des pads est perdue)
+    if (n_rings > 0) {
     // --- 2. Anneaux de transition (un par quadrant) ---
     // ordre : (sx,sy) = (+,+), (+,-), (-,+), (-,-)
     for (int sx = +1; sx >= -1; sx -= 2) {
@@ -160,6 +164,7 @@ void PadPlane::build_anode() {
       }
     }
 
+    }
     std::cout << "PadPlane : " << m_pads.size() << " pads\n";
 }
 
@@ -174,7 +179,7 @@ void PadPlane::build_cells() {
     const double r_trans    = m_params.r_transition;
     const double r_active   = m_params.r_active;
     const int    n_rings    = m_params.n_rings;
-    const double ring_width = (r_active - r_trans) / n_rings;
+    const double ring_width = (n_rings > 0) ? (r_active - r_trans) / n_rings : 0.0;
 
     m_nrows = static_cast<int>(std::ceil(r_active / pitch)) + 1;
     m_ncols = m_nrows;
@@ -216,7 +221,9 @@ void PadPlane::build_cells() {
                         double r = std::sqrt(px * px + py * py);
                         int qi = quadrant_index(px, py);
                         int target = -1;                       // -1 : au-delà de r_active, perdu
-                        if (r < r_trans) {
+                        if (n_rings <= 0) {
+                            // pas d'anneaux : hors des pads carres, la charge est perdue
+                        } else if (r < r_trans) {
                             target = m_trans_ids[qi];
                         } else if (r < r_active) {
                             int ring = (int)((r - r_trans) / ring_width);
