@@ -19,6 +19,7 @@
 #include <iostream>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 #include <stdexcept>
 #include "detector.hpp"
 #include "pad_geometry.hpp"
@@ -32,16 +33,22 @@ struct TableOptions {
     double      step_out;      // pas en u et v, cm (0 = auto)
     double      r_src;         // rayon de la source, cm (0 = auto)
     double      max_table_mb;  // plafond de memoire de la table
+    int         R;             // pas de table = delta_t / R ; 0 = automatique parmi 1..6 (voir resolve_table_R)
+    double      tau_tol;       // erreur relative toleree sur le signal (interpolation en tau) ; 0 = pas de controle
+    double      tau_dmin;      // distance de derive minimale (cm) des voxels pour ce controle
+    int         tau_Rref;      // R de la table de reference du controle (>= 8 pour le choix automatique)
     std::string ignore;        // identifiants de controles a ignorer, separes par des virgules
 
     TableOptions()
-        : n_d(10), n_img(10), m_cells(0), step_out(0.0), r_src(0.0), max_table_mb(500.0) {}
+        : n_d(10), n_img(10), m_cells(0), step_out(0.0), r_src(0.0), max_table_mb(500.0), R(0), tau_tol(0.005), tau_dmin(2.0), tau_Rref(12) {}
 };
 
 struct DerivedParams {
     double pitch, a;
     double T_gap;          // temps de collecte dans le gap (ns)
-    double dtau;           // pas de la table en tau (ns)
+    double dtau;           // pas de la table en tau (ns) = delta_t / R
+    int    R;              // pas de table par bin de lecture
+    double T_frac_ns;      // duree du dernier pas, partiel (ns) : T_gap - (n_h - 1) * dtau
     double tau_max_ns;
     double sigma_t_max;    // etalement temporel maximal (ns)
     int    n_h, m_min, m_max, n_tau;
@@ -59,8 +66,8 @@ struct DerivedParams {
 inline const std::vector<std::string>& check_ids() {
     static std::vector<std::string> ids;
     if (ids.empty()) {
-        ids.push_back("T_gap_non_multiple");
-        ids.push_back("n_h_small");
+                ids.push_back("n_h_small");
+        ids.push_back("tau_resolution");
         ids.push_back("step_out_coarse");
         ids.push_back("reach_small");
         ids.push_back("table_memory");
@@ -151,33 +158,21 @@ inline DerivedParams derive_params(const DetectorConfig& cfg, const PadPlanePara
     D.pitch = pp.pad_size + pp.inter_pad;
     D.a     = 0.5 * D.pitch;
 
-    // --- temps dans le gap : la table impose dtau = delta_t, donc T_gap multiple de delta_t ---
+    // --- pas de la table : dtau = delta_t / R, n_h = ceil(T_gap / dtau) pas dans le gap ---
+    // La vitesse est la vraie : le dernier pas (le plus bas) n'est que partiel, voir PhiSource::height.
     D.T_gap = g / cfg.ve_ga;
-    const double ratio = D.T_gap / cfg.delta_t;
-    int n_h = (int)(ratio + 0.5);
-
-    if (std::fabs(ratio - n_h) > 1.0e-6) {
-        int lo = (int)std::floor(ratio);
-        if (lo < 1) lo = 1;
-        int hi = lo + 1;
-        std::ostringstream s;
-        s << "dga/ve_ga = " << D.T_gap << " ns n'est pas un multiple de delta_t = " << cfg.delta_t
-          << " ns (rapport " << ratio << "). Le calcul rapide exige un rapport entier. "
-          << "Valeurs voisines : dga = " << lo * cfg.delta_t * cfg.ve_ga << " cm ou "
-          << hi * cfg.delta_t * cfg.ve_ga << " cm (pour ve_ga = " << cfg.ve_ga << "), ou ve_ga = "
-          << g / (hi * cfg.delta_t) << " ou " << g / (lo * cfg.delta_t) << " cm/ns (pour dga = " << g
-          << "). Si on continue quand meme : voie lente et borne de selection fausse.";
-        chk.fail("T_gap_non_multiple", s.str());
-    }
+    D.R     = opt.R;
+    D.dtau  = cfg.delta_t / D.R;
+    int n_h = (int)std::ceil(D.T_gap / D.dtau - 1.0e-9);
     if (n_h < 4) {
         std::ostringstream s;
-        s << "dga/(ve_ga*delta_t) = " << ratio << " : le signal d'induction dans le gap est decrit par moins de "
-          << "4 pas de table (T_gap = " << D.T_gap << " ns pour delta_t = " << cfg.delta_t << " ns).";
+        s << "le gap est decrit par moins de 4 pas de table (T_gap = " << D.T_gap << " ns, pas = "
+          << D.dtau << " ns). Augmenter table_R.";
         chk.fail("n_h_small", s.str());
     }
     if (n_h < 2) n_h = 2;
-    D.n_h  = n_h;
-    D.dtau = g / (cfg.ve_ga * n_h);
+    D.n_h       = n_h;
+    D.T_frac_ns = D.T_gap - (n_h - 1) * D.dtau;
 
     // --- fin de la plage en tau (meme formule que l'ancien default_table_params) ---
     const double s_kg = cfg.DL_kg * std::sqrt(cfg.dkg) / cfg.ve_kg;
@@ -196,6 +191,8 @@ inline DerivedParams derive_params(const DetectorConfig& cfg, const PadPlanePara
     tp.n_d   = opt.n_d;
     tp.n_img = opt.n_img;
     tp.n_h   = n_h;
+    tp.R     = D.R;
+    tp.dtau  = D.dtau;
     tp.tau_max_ns = D.tau_max_ns;
 
     // pas des noeuds en u, v : au plus pitch/16 et au plus g/15 (la structure de Psi varie sur ~g)
@@ -213,8 +210,8 @@ inline DerivedParams derive_params(const DetectorConfig& cfg, const PadPlanePara
     if (mc_auto < 8) mc_auto = 8;
     tp.m_cells = (opt.m_cells > 0) ? opt.m_cells : mc_auto;
 
-    // rayon de la source : phi decroit comme exp(-pi r / g) ; 5 g donne ~1e-7 (verifie apres coup : phi_edge)
-    tp.r_src = (opt.r_src > 0.0) ? opt.r_src : std::sqrt(2.0) * D.a + 5.0 * g;
+    // rayon de la source : phi decroit comme exp(-pi r / g) ; 6 g donne ~1e-8 (verifie apres coup : phi_edge)
+    tp.r_src = (opt.r_src > 0.0) ? opt.r_src : std::sqrt(2.0) * D.a + 6.0 * g;
 
     // portee d'induction et taille de la table : le stencil cubique lit jusqu'au noeud i0 + 2
     D.reach_cm = pp.reach_pitch * D.pitch;
@@ -259,11 +256,172 @@ inline DerivedParams derive_params(const DetectorConfig& cfg, const PadPlanePara
     return D;
 }
 
+// ---------------------------------------------------------------------------
+// Resolution en tau : erreur d'interpolation mesuree entre deux tables (pas dtau et dtau/2)
+// ---------------------------------------------------------------------------
+
+inline double tau_rnd(unsigned long& seed) {          // generateur congruentiel simple, dans [0, 1)
+    seed = (seed * 1103515245UL + 12345UL) & 0x7fffffffUL;
+    return (double)seed / 2147483648.0;
+}
+
+// Signaux de voxels isoles (charge unitaire) integres sur des bins de delta_t, calcules avec la
+// table A (pas dtau) et la table B (pas dtau/2), aux memes instants. Renvoie le maximum, sur les
+// signaux dont le pic atteint au moins 5 % du plus grand pic, de  max|qA - qB| / pic.
+// La distance de derive d est tiree uniformement dans [d_min, dkg] : l'erreur est la plus grande
+// pres de la grille (etalement temporel faible), donc le maximum est atteint vers d_min.
+inline double tau_resolution_error(const PsiTable& A, const PsiTable& B, const DetectorConfig& cfg,
+                                   const DerivedParams& D, double d_min, int n_samples)
+{
+    const int ntA = A.n_tau(), ntB = B.n_tau();
+    std::vector<double> vecA(ntA), vecB(ntB), padA(ntA + 2), padB(ntB + 2);
+    const double tau_lo = std::min(A.tau_min(), B.tau_min());
+    const double tau_hi = std::max(A.tau_max(), B.tau_max());
+    const int ne = (int)std::ceil((tau_hi - tau_lo) / cfg.delta_t) + 3;
+    std::vector<int>    idxA(ne), idxB(ne);
+    std::vector<double> edA(ne), edB(ne);
+    double wA[4], wB[4];
+    const double uv_max = std::min(2.0 * D.pitch, D.reach_cm);
+
+    std::vector<double> errs, amps;
+    double amp_max = 0.0;
+    unsigned long seed = 20241109UL;
+    for (int s = 0; s < n_samples; ++s) {
+        const double u = (2.0 * tau_rnd(seed) - 1.0) * uv_max;
+        const double v = (2.0 * tau_rnd(seed) - 1.0) * uv_max;
+        const double d = d_min + (cfg.dkg - d_min) * tau_rnd(seed);
+        const double tau0 = tau_lo + tau_rnd(seed) * cfg.delta_t;
+
+        A.psi_vector(u, v, d, &vecA[0]);
+        B.psi_vector(u, v, d, &vecB[0]);
+        padA[0] = vecA[0];  padB[0] = vecB[0];
+        for (int n = 0; n < ntA; ++n) padA[n + 1] = vecA[n];
+        for (int n = 0; n < ntB; ++n) padB[n + 1] = vecB[n];
+        padA[ntA + 1] = vecA[ntA - 1];  padB[ntB + 1] = vecB[ntB - 1];
+
+        if (!A.edges_prepare(tau0, cfg.delta_t, ne, &idxA[0], wA) ||
+            !B.edges_prepare(tau0, cfg.delta_t, ne, &idxB[0], wB))
+            throw std::logic_error("tau_resolution_error : pas de table incompatible avec delta_t (bug)");
+        A.edges_values(&padA[0], &idxA[0], wA, ne, &edA[0]);
+        B.edges_values(&padB[0], &idxB[0], wB, ne, &edB[0]);
+
+        double amp = 0.0, err = 0.0;
+        for (int j = 0; j + 1 < ne; ++j) {
+            const double qa = edA[j + 1] - edA[j];
+            const double qb = edB[j + 1] - edB[j];
+            amp = std::max(amp, std::fabs(qa));
+            err = std::max(err, std::fabs(qa - qb));
+        }
+        errs.push_back(err);  amps.push_back(amp);
+        amp_max = std::max(amp_max, amp);
+    }
+    double worst = 0.0;
+    for (size_t s = 0; s < errs.size(); ++s)
+        if (amps[s] >= 0.05 * amp_max && amps[s] > 0.0) worst = std::max(worst, errs[s] / amps[s]);
+    return worst;
+}
+
+// Parametres d'une table du controle de resolution en tau. Les points tires ne sont qu'a moins de
+// 2 pitchs du pad : on reduit n_out a cette zone (memoire et temps), sans toucher a la table de production.
+inline TableParams tau_check_params(const DetectorConfig& cfg, const PadPlaneParams& pp,
+                                    const TableOptions& opt, int R, DerivedParams& D, double& mb)
+{
+    TableOptions o = opt;  o.R = R;
+    CheckList tmp;                                   // les echecs de ces calculs d'essai ne comptent pas
+    D = derive_params(cfg, pp, o, tmp);
+    TableParams tp = D.tp;
+    const double uv_max = std::min(2.0 * D.pitch, D.reach_cm);
+    const int n = (int)std::ceil(uv_max / tp.step_out) + 3;
+    if (n < tp.n_out) tp.n_out = n;
+    mb = (double)tp.n_d * tp.n_out * tp.n_out * D.n_tau * 4.0 / 1.0e6;
+    return tp;
+}
+
+// Choisit (table_R = 0) ou verifie (table_R > 0) le pas de table delta_t / R.
+// Reference : table de R = tau_Rref (ou 2R si R >= tau_Rref). Pour chaque candidat R = 1, ..., 6,
+// on construit sa table et on mesure l'ecart a la reference (tau_resolution_error) ; on retient
+// le plus petit R dont l'ecart est <= tau_tol. On controle aussi que la reference est assez fine :
+// l'ecart entre R_ref/2 et R_ref, divise par ~4 (convergence en dtau^2.3), estime son biais.
+inline int resolve_table_R(const DetectorConfig& cfg, const PadPlaneParams& pp,
+                           const TableOptions& opt, CheckList& chk)
+{
+    if (opt.tau_tol <= 0.0) {
+        if (opt.R < 1) throw std::runtime_error("table_R = 0 (automatique) demande table_tau_tol > 0");
+        return opt.R;
+    }
+    if (opt.tau_dmin < 0.0 || opt.tau_dmin >= cfg.dkg)
+        throw std::runtime_error("table_tau_dmin doit etre dans [0, dkg[");
+    const bool automatique = (opt.R < 1);
+    if (automatique && opt.tau_Rref < 8)
+        throw std::runtime_error("table_tau_Rref doit etre >= 8 pour le choix automatique de R");
+    std::vector<int> cand;
+    if (automatique) { for (int r = 1; r <= 6; ++r) cand.push_back(r); }
+    else             { cand.push_back(opt.R); }
+    const int Rref = (cand.back() < opt.tau_Rref) ? opt.tau_Rref : 2 * cand.back();
+    const int Rh   = Rref / 2;
+
+    DerivedParams DR, DH;
+    double mb_ref = 0.0, mb_h = 0.0;
+    TableParams tpR = tau_check_params(cfg, pp, opt, Rref, DR, mb_ref);
+    TableParams tpH = tau_check_params(cfg, pp, opt, Rh,   DH, mb_h);
+    if (mb_ref > opt.max_table_mb) {
+        std::ostringstream s;
+        s << "la table de reference du controle (R = " << Rref << ") ferait " << mb_ref << " Mo (plafond "
+          << opt.max_table_mb << ") : resolution en tau non verifiable. Augmenter max_table_mb, diminuer "
+          << "table_tau_Rref, ou imposer table_R avec table_tau_tol = 0.";
+        chk.fail("tau_resolution", s.str());
+        return automatique ? 1 : opt.R;
+    }
+    std::cout << "Controle de la resolution en tau (tolerance " << 100.0 * opt.tau_tol << " %, voxels a d >= "
+              << opt.tau_dmin << " cm, reference R = " << Rref << ") :\n";
+    PsiTable ref(tpR);
+    PsiTable half(tpH);
+    const double conv = tau_resolution_error(half, ref, cfg, DR, opt.tau_dmin, 2000);
+    const double bias = conv / 4.0;
+    std::cout << "  reference : R = " << Rh << " contre R = " << Rref << " : ecart = " << 100.0 * conv
+              << " %  (biais estime de la reference ~ " << 100.0 * bias << " %)\n";
+    if (bias > 0.5 * opt.tau_tol) {
+        std::ostringstream s;
+        s << "la table de reference (R = " << Rref << ") n'est pas assez fine : biais estime ~ " << 100.0 * bias
+          << " % pour une tolerance de " << 100.0 * opt.tau_tol << " %. Augmenter table_tau_Rref.";
+        chk.fail("tau_resolution", s.str());
+    }
+
+    double err = 0.0;
+    for (size_t k = 0; k < cand.size(); ++k) {
+        const int R = cand[k];
+        if (R == Rh) {
+            err = conv;                              // deja calculee
+        } else {
+            DerivedParams DC;  double mbc = 0.0;
+            TableParams tpc = tau_check_params(cfg, pp, opt, R, DC, mbc);
+            PsiTable T(tpc);
+            err = tau_resolution_error(T, ref, cfg, DC, opt.tau_dmin, 2000);
+        }
+        std::cout << "  R = " << R << " : ecart a R = " << Rref << " : " << 100.0 * err << " %\n";
+        if (err <= opt.tau_tol) return R;
+    }
+    std::ostringstream s;
+    if (automatique) {
+        s << "aucun R <= 6 n'atteint la tolerance " << 100.0 * opt.tau_tol << " % (R = 6 : ecart " << 100.0 * err
+          << " %). R = 6 est retenu. Augmenter table_tau_tol, ou imposer table_R = 7 ou plus avec "
+          << "table_tau_tol = 0 (et table_tau_Rref plus grand). (Cause probable : diffusion longitudinale "
+          << "faible devant delta_t.)";
+    } else {
+        s << "table_R = " << opt.R << " : ecart a R = " << Rref << " de " << 100.0 * err << " % (> tolerance "
+          << 100.0 * opt.tau_tol << " %). Essayer un R plus grand, ou table_R = 0 (automatique), ou augmenter "
+          << "table_tau_tol.";
+    }
+    chk.fail("tau_resolution", s.str());
+    return automatique ? 6 : opt.R;
+}
+
 inline void print_derived(const DerivedParams& D, const DetectorConfig& cfg) {
     std::cout << "\n--- Parametres derives ---\n"
               << "pitch              = " << D.pitch * 10.0 << " mm    gap = " << cfg.dga * 10.0 << " mm\n"
               << "T_gap              = " << D.T_gap << " ns    n_h = " << D.n_h
-              << "    dtau = " << D.dtau << " ns\n"
+              << "    dtau = " << D.dtau << " ns (delta_t/" << D.R << ")\n"
+              << "dernier pas (partiel) = " << D.T_frac_ns << " ns (sur " << D.dtau << " ns)\n"
               << "plage en tau       = [" << D.m_min * D.dtau << ", " << D.m_max * D.dtau
               << "] ns    n_tau = " << D.n_tau << "\n"
               << "noeuds u,v         : pas = " << D.tp.step_out * 10.0 << " mm    n_out = " << D.tp.n_out << "\n"

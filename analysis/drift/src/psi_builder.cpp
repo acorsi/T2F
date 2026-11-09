@@ -87,14 +87,14 @@ void smooth_level(const PhiSource& src, int l, const Weights1D& W,
 // PhiSource
 // ---------------------------------------------------------------------------
 
-PhiSource::PhiSource(double a, double g, int n_img, int m_cells, double r_src, int n_h)
-    : m_a(a), m_g(g), m_step(a / m_cells), m_rsrc(r_src), m_nc(0), m_nh(n_h)
+PhiSource::PhiSource(double a, double g, int n_img, int m_cells, double r_src, int n_h, double dh)
+    : m_a(a), m_g(g), m_step(a / m_cells), m_rsrc(r_src), m_dh(dh), m_nc(0), m_nh(n_h)
 {
     m_nc = (int)std::ceil(r_src / m_step);
     m_data.assign((size_t)(n_h + 1) * m_nc * m_nc, 0.0);
 
     for (int l = 0; l < n_h; ++l) {          // l = n_h (h = g) : phi = 0, déjà à zéro
-        double h = l * g / n_h;
+        double h = height(l);
         for (int j = 0; j < m_nc; ++j) {
             double x = (j + 0.5) * m_step;
             for (int k = 0; k <= j; ++k) {   // phi(x,y) = phi(y,x) : on ne calcule que k <= j
@@ -122,12 +122,15 @@ void build_psi(const PhiSource& src, const PsiParams& P, std::vector<double>& ps
 {
     const int    n_h   = src.n_h();
     const double g     = src.g();
-    const double dh    = g / n_h;
+    const double dh    = src.dh();
     const int    n_out = P.n_out;
     const int    n_tau = P.m_max - P.m_min + 1;
 
     if (std::fabs(dh - P.ve_ga * P.dtau) > 1.0e-9 * g) {
-        throw std::runtime_error("build_psi : g/n_h doit valoir ve_ga*dtau");
+        throw std::runtime_error("build_psi : dh doit valoir ve_ga*dtau");
+    }
+    if (!(n_h * dh >= g * (1.0 - 1.0e-9)) || !((n_h - 1) * dh < g)) {
+        throw std::runtime_error("build_psi : n_h doit valoir ceil(g / (ve_ga*dtau))");
     }
 
     // --- Etape 1 : lissage latéral de chaque niveau de hauteur --------------
@@ -142,7 +145,7 @@ void build_psi(const PhiSource& src, const PsiParams& P, std::vector<double>& ps
     const double sigma_min = 0.5 * src.step();
 
     for (int l = 0; l <= n_h; ++l) {
-        double h  = l * dh;
+        double h  = src.height(l);
         double s2 = P.sigma0 * P.sigma0 + P.DT_ga * P.DT_ga * (g - h);
         double sigma = std::sqrt(s2);
         if (sigma < sigma_min) sigma = sigma_min;
@@ -177,7 +180,7 @@ void build_psi(const PhiSource& src, const PsiParams& P, std::vector<double>& ps
     // --- Convolution --------------------------------------------------------
     // Un électron qui arrive à la grille avec le retard delta = j*dtau a, au
     // temps tau = m*dtau, passé q = m - j pas dans le gap. Sa hauteur est
-    //   h = g - q*dh   -> niveau l = n_h - q.
+    //   h = g - q*dh   -> niveau l = n_h - q (h_l = src.height(l), partielle pour l = 1).
     //   q <= 0   : pas encore entré dans le gap  -> 0
     //   q >= n_h : collecté                      -> valeur à l'anode (l = 0)
     psi.assign((size_t)n_out * n_out * n_tau, 0.0);

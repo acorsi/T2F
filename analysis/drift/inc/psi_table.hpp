@@ -30,7 +30,9 @@ struct TableParams {
     int    n_d;        // nombre de noeuds en d (uniformes en ln sigma_anode(d), voir PsiTable)
     int    n_out;      // nombre de noeuds en u et en v (quart de plan)
     double step_out;   // pas en u et v (cm)
-    int    n_h;        // nombre de niveaux de hauteur : pas en tau = g / (ve_ga * n_h)
+    int    n_h;        // nombre de pas de table dans le gap : n_h = ceil(g / (ve_ga * dtau))
+    int    R;          // pas de table par bin de lecture : dtau = delta_t / R
+    double dtau;       // pas de la table en tau (ns)
     double tau_max_ns; // fin de la plage en tau (agrandie si besoin pour atteindre le plateau)
 
     // --- calcul de phi ---
@@ -75,7 +77,7 @@ public:
 
     // Saut des cellules négligeables (voir PadPlane::project)
     int    d_cell(double d) const;                     // noeud en d juste en dessous de d
-    double dpsi_max(double u, double v, int kd) const;   // majorant de max_tau |Psi(tau+dtau) - Psi(tau)|
+    double dpsi_max(double u, double v, int kd) const;   // majorant de max_tau |Psi(tau+delta_t) - Psi(tau)| (= R pas de table)
     
     // Bords de bins d'un voxel : nedges bords aux temps tau0 + j*step.
     // Renvoie false si step n'est pas un multiple entier du pas de la table.

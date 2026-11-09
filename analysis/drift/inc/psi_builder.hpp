@@ -35,14 +35,17 @@ public:
     // n_img   : nombre d'images de la série (10 suffit : erreur ~ 1e-7)
     // m_cells : nombre de cellules par demi-pad (8 -> pas = p/16)
     // r_src   : rayon au-delà duquel phi est pris nul
-    // n_h     : nombre d'intervalles en h
-    PhiSource(double a, double g, int n_img, int m_cells, double r_src, int n_h);
+    // n_h     : nombre d'intervalles en h ; dh : pas en h (= ve_ga * dtau), voir height()
+    PhiSource(double a, double g, int n_img, int m_cells, double r_src, int n_h, double dh);
 
     double a()       const { return m_a; }
     double g()       const { return m_g; }
     double step()    const { return m_step; }
     int    n_cells() const { return m_nc; }
     int    n_h()     const { return m_nh; }
+    double dh()      const { return m_dh; }
+    // hauteur du niveau l : h_l = max(0, g - (n_h - l) * dh)  (l = n_h : grille ; l = 0 : anode, collecte)
+    double height(int l) const { double h = m_g - (m_nh - l) * m_dh; return (h > 0.0) ? h : 0.0; }
     // max de |phi| sur les cellules du bord (r_src - 2 pas < r <= r_src), tous niveaux de hauteur
     double edge_max() const;
 
@@ -50,7 +53,7 @@ public:
     const double* row(int l, int j) const { return &m_data[(l * m_nc + j) * m_nc]; }
 
 private:
-    double m_a, m_g, m_step, m_rsrc;
+    double m_a, m_g, m_step, m_rsrc, m_dh;
     int    m_nc, m_nh;
     std::vector<double> m_data;
 };
@@ -74,5 +77,6 @@ inline int psi_n_tau(const PsiParams& P) { return P.m_max - P.m_min + 1; }
 //     psi[ (i * n_out + j) * n_tau + n ]   ,   tau = (m_min + n) * dtau
 // (u = i*step_out, v = j*step_out, tau est l'indice le plus rapide).
 //
-// Condition : g / n_h doit valoir ve_ga * dtau (un pas en tau = un niveau en h).
+// Condition : dh = ve_ga * dtau (un pas en tau = un niveau en h), avec n_h = ceil(g / dh) :
+// le niveau le plus bas (l = 1) peut avoir une hauteur partielle, l = 0 est la collecte.
 void build_psi(const PhiSource& src, const PsiParams& P, std::vector<double>& psi);

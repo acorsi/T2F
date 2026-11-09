@@ -76,8 +76,10 @@ PsiTable::PsiTable(const TableParams& tp)
     : m_tp(tp), m_dtau(0.0), m_min(0), m_max(0), m_c0(0.0), m_x0(0.0), m_dx(0.0), m_phi_edge(0.0)
 {
     if (tp.n_d < 2) throw std::runtime_error("PsiTable : n_d doit etre >= 2");
+    if (tp.R < 1)   throw std::runtime_error("PsiTable : R doit etre >= 1");
+    if (tp.dtau <= 0.0) throw std::runtime_error("PsiTable : dtau doit etre > 0");
 
-    m_dtau = tp.g / (tp.ve_ga * tp.n_h);
+    m_dtau = tp.dtau;
 
     // Plage en tau : on descend jusqu'à -3.5 sigma_t (là Psi < 1e-6) et on monte
     // jusqu'à tau_max_ns, ou plus loin si le plateau n'est pas atteint.
@@ -95,7 +97,7 @@ PsiTable::PsiTable(const TableParams& tp)
     const size_t taille_d = (size_t)tp.n_out * tp.n_out * n_tau;
     m_data.assign((size_t)tp.n_d * taille_d, 0.0f);
 
-    PhiSource src(tp.a, tp.g, tp.n_img, tp.m_cells, tp.r_src, tp.n_h);
+    PhiSource src(tp.a, tp.g, tp.n_img, tp.m_cells, tp.r_src, tp.n_h, tp.ve_ga * m_dtau);
     m_phi_edge = src.edge_max();
 
     std::vector<double> psi;
@@ -162,7 +164,8 @@ double PsiTable::dpsi_max(double u, double v, int kd) const {
                 if (w > m) m = w;
             }
         }
-    return m;
+    // m = variation maximale sur UN pas de table ; un bin de lecture en couvre R
+    return m * (float)m_tp.R;
 }
 
 void PsiTable::psi_vector(double u, double v, double d, double* out) const {
