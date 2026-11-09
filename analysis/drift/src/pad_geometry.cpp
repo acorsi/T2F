@@ -493,6 +493,7 @@ void PadPlane::project_pair(
       pc.pad_id = m_pads[id].id;
       pc.x      = m_pads[id].x;
       pc.y      = m_pads[id].y;
+      pc.k0=0;
       
       const int ka = kmin[id], kb = kmax[id];
       double Q = 0.0;
@@ -502,21 +503,30 @@ void PadPlane::project_pair(
 	Q += q;
 	if (q > cfg.seuil_qt_pos || q < cfg.seuil_qt_neg) pass = true;
       }
+
+      bool written = false;
       if (pass) {
-	pc.t.reserve(kb - ka + 1);
-	pc.qt.reserve(kb - ka + 1);
+	int first = -1, last = -1;
 	for (int k = ka; k <= kb; ++k) {
-	  pc.t.push_back(k * delta_t);
-	  pc.qt.push_back(qt_buf[id][k]);
+	  if (std::fabs(qt_buf[id][k]) > cfg.eps_qt) {
+	    if (first < 0) first = k;
+	    last = k;
+	  }
+	}
+	if (first >= 0) {
+	  pc.k0 = first;
+	  pc.qt.assign(&qt_buf[id][first], &qt_buf[id][last] + 1);
+	  written = true;
 	}
       }
       for (int k = ka; k <= kb; ++k) qt_buf[id][k] = 0.0;
       pc.q = Q;
-      if (pass) {
+      if (written) {
 	if (touchedF[0][id]) resH.push_back(pc);
 	if (touchedF[1][id]) resL.push_back(pc);
       }
-      PROF(if (!pass) unread[id] = 1;)
+      PROF(if (!written) unread[id] = 1;)
+
     }
     
 

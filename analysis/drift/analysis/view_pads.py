@@ -201,7 +201,7 @@ class ViewerType2:
         per_frag = {}   # pad_id -> liste de (ks, valeurs)
         for frag in ("H", "L"):
             pid = np.array(f[f"/{frag}/pid"][i], dtype=int)
-            pt  = np.array(f[f"/{frag}/pt"][i])
+            pk0 = np.array(f[f"/{frag}/pk0"][i]).astype(int)
             pnt = np.array(f[f"/{frag}/pnt"][i], dtype=int)
             pv  = np.array(f[f"/{frag}/pqt"][i])
             if len(pnt) == 0:
@@ -215,8 +215,7 @@ class ViewerType2:
                 pad_id = int(pid[k_pad])
                 if pad_id in per_frag:      # pad partagé : H et L portent la même somme
                     continue
-                ks = [int(round(float(t) / dt))
-                      for t in pt[offsets[k_pad]:offsets[k_pad] + n]]
+                ks = list(range(int(pk0[k_pad]), int(pk0[k_pad]) + int(n)))
                 vs = [float(v) for v in pv[offsets[k_pad]:offsets[k_pad] + n]]
                 if self.mode == "Qold":
                     vs = list(np.cumsum(vs))

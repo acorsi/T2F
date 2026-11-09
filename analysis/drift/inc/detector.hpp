@@ -24,7 +24,7 @@ struct DetectorConfig {
 
     // --- Géométrie ---
     double dkg          = 20.0;   // distance cathode → grille (cm)
-    double dga          =  0.5;   // distance grille → anode (cm)
+    double dga          =  0.3;   // distance grille → anode (cm)
     double vertex_r_max =  1.0;   // rayon max du vertex dans le plan XZ (cm)
     double step_size    =  0.02;  // pas de la trace (cm)
 
@@ -32,14 +32,16 @@ struct DetectorConfig {
     double Fano     = 0.2;      // Facteur de Fano pour fluctuation du nombre d'électrons  
     double W        = 26.0e-6;  // énergie par paire e⁻/ion (MeV)
 
-    double DT_kg    = 0.06;     // coefficient diffusion transverse   (cm/√cm)
-    double DT_ga    = 0.06;        // coefficient diffusion transverse   (cm/√cm)
-    double DL_kg    = 0.035;     // coefficient diffusion longitudinale (cm/√cm)
-    double DL_ga    = 0.02;        // coefficient diffusion longitudinale (cm/√cm)
-   
-    double ve_kg    = 0.0055;   // vitesse de dérive (cm/ns) cathode-grille 
-    double ve_ga    = 0.002;    // vitesse de dérive (cm/ns) grille-anode
-    double delta_t  = 10.0;     // pas temporel (ns)
+    /***
+     *Coeff Gaz pour P10
+     ***/
+  double DT_kg    = 0.06;     // coefficient diffusion transverse   (cm/√cm)
+  double DT_ga    = 0.05;        // coefficient diffusion transverse   (cm/√cm)
+  double DL_kg    = 0.035;     // coefficient diffusion longitudinale (cm/√cm)
+  double DL_ga    = 0.02;        // coefficient diffusion longitudinale (cm/√cm)   
+  double ve_kg    = 0.0055;   // vitesse de dérive (cm/ns) cathode-grille 
+  double ve_ga    = 0.002;    // vitesse de dérive (cm/ns) grille-anode
+  double delta_t  = 10.0;     // pas temporel (ns)
 
     // Seuils de lecture sur qt (électrons par bin), comme un déclenchement d'oscilloscope.
     // Un bin est gardé si qt > seuil_qt_pos  OU  qt < seuil_qt_neg.
@@ -50,6 +52,9 @@ struct DetectorConfig {
     double seuil_qt_pos =  200.0;
     double seuil_qt_neg = -200.0;
 
+    // Rognage de la plage écrite d'un pad : on garde du premier au dernier bin avec |qt| > eps_qt
+    double eps_qt = 10.0;
+    
     // --- Helpers ---
     double z_grid()  const { return dkg; }
     double z_anode() const { return dkg + dga; }

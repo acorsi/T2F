@@ -20,18 +20,15 @@ struct Pad {
     int    id;
 };
 
-// Signal d'un pad pour un fragment. Les tableaux t, qt, Q ont la même taille :
+// Signal d'un pad pour un fragment.
 // un élément par bin de delta_t gardé par les seuils de lecture.
-//   t  : début du bin, en ns depuis la fission (t = k * delta_t)
 //   qt : charge induite pendant le bin [t, t + delta_t], en électrons (signé)
-//   Q  : charge cumulée à la FIN du bin (somme de tous les qt depuis le début,
-//        y compris les bins non gardés), en électrons
 struct PadCharge {
     int    pad_id;
     double x, y;
-    double q;                  // charge finale du pad, en électrons (= dernier Q)
-    std::vector<double> t;
-    std::vector<double> qt;
+    double q;                  // charge finale du pad (somme de tous les bins), en électrons
+    int    k0;                 // indice du premier bin écrit : t = k0 * delta_t
+    std::vector<double> qt;    // bins contigus k0, k0+1, ... (signés)
 };
 
 struct FragTrace {

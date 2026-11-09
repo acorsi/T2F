@@ -4,6 +4,7 @@
 #include "processor.hpp"
 #include "pad_geometry.hpp"
 #include "prof.hpp"
+#include "config_file.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -54,27 +55,131 @@ static void timed_vlen(H5Writer& w, const std::string& name,
     g_wt[name] += omp_get_wtime() - t0;
 }
 
-int main(int argc, char* argv[]) {
-  // Usage : process [N] [seuil_pos] [seuil_neg] [n_threads] [frag_mask]
-  //   frag_mask : 3 = H et L (défaut), 1 = H seul, 2 = L seul
-  //   seuils en électrons par bin ; sans argument : valeurs de detector.hpp (+200 / -200).
-  //   Pour tout lire (contrôles de conservation) : ./process 200 0 0
-  //   n_threads : 8 par défaut ; 1 pour des tirages reproductibles d'une version à l'autre.
+// ---------------------------------------------------------------------------
+// Paramètres d'exécution (hors detecteur et pads), lus dans le fichier d'input
+// ---------------------------------------------------------------------------
+struct RunParams {
+    std::string in_path;
+    std::string out_path;
+    int    n_events;          // 0 = tous
+    int    n_threads;
+    int    chunk_size;
+    int    base_seed;
+    int    frag_mask;         // 3 = H et L, 1 = H seul, 2 = L seul
+    double step_size_target;  // cm
+};
 
-    const std::string in_path  = "../../../simulation_output/T2F_G4_40mu.h5";
-    const std::string out_path = "../drift_output/drift_G4_40mu_merged.h5";
+// Lit toutes les cles du fichier. Les valeurs absentes gardent le defaut de
+// DetectorConfig / PadPlaneParams / RunParams. Une cle inconnue est une erreur.
+static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPlaneParams& pp)
+{
+    // --- fichiers (obligatoires) ---
+    R.in_path  = c.get_string("input_file");
+    R.out_path = c.get_string("output_file");
+
+    // --- execution ---
+    R.n_events         = c.get_int   ("n_events",         0);
+    R.n_threads        = c.get_int   ("n_threads",        8);
+    R.chunk_size       = c.get_int   ("chunk_size",       20000);
+    R.base_seed        = c.get_int   ("base_seed",        42);
+    R.frag_mask        = c.get_int   ("frag_mask",        3);
+    R.step_size_target = c.get_double("step_size_target", 0.05);
+
+    // --- lecture ---
+    cfg.seuil_qt_pos = c.get_double("seuil_qt_pos", cfg.seuil_qt_pos);
+    cfg.seuil_qt_neg = c.get_double("seuil_qt_neg", cfg.seuil_qt_neg);
+    cfg.eps_qt       = c.get_double("eps_qt",       cfg.eps_qt);
+
+    // --- detecteur ---
+    cfg.dkg          = c.get_double("dkg",          cfg.dkg);
+    cfg.dga          = c.get_double("dga",          cfg.dga);
+    cfg.vertex_r_max = c.get_double("vertex_r_max", cfg.vertex_r_max);
+    cfg.Fano         = c.get_double("Fano",         cfg.Fano);
+    cfg.W            = c.get_double("W",            cfg.W);
+    cfg.DT_kg        = c.get_double("DT_kg",        cfg.DT_kg);
+    cfg.DT_ga        = c.get_double("DT_ga",        cfg.DT_ga);
+    cfg.DL_kg        = c.get_double("DL_kg",        cfg.DL_kg);
+    cfg.DL_ga        = c.get_double("DL_ga",        cfg.DL_ga);
+    cfg.ve_kg        = c.get_double("ve_kg",        cfg.ve_kg);
+    cfg.ve_ga        = c.get_double("ve_ga",        cfg.ve_ga);
+    cfg.delta_t      = c.get_double("delta_t",      cfg.delta_t);
+
+    // --- plan de pads ---
+    pp.pad_size     = c.get_double("pad_size",     pp.pad_size);
+    pp.inter_pad    = c.get_double("inter_pad",    pp.inter_pad);
+    pp.r_quinconce  = c.get_double("r_quinconce",  pp.r_quinconce);
+    pp.r_transition = c.get_double("r_transition", pp.r_transition);
+    pp.r_active     = c.get_double("r_active",     pp.r_active);
+    pp.n_rings      = c.get_int   ("n_rings",      pp.n_rings);
+    pp.y_offset     = c.get_double("y_offset",     pp.y_offset);
+
+    // --- induction ---
+    pp.reach_pitch  = c.get_double("reach_pitch",  pp.reach_pitch);
+    pp.bound_margin = c.get_double("bound_margin", pp.bound_margin);
+
+    // une cle jamais lue = faute de frappe : on s'arrete
+    c.check_unused();
+
+    // --- verifications elementaires ---
+    if (R.n_events < 0)                          throw std::runtime_error("n_events doit etre >= 0");
+    if (R.n_threads < 1)                         throw std::runtime_error("n_threads doit etre >= 1");
+    if (R.chunk_size < 1)                        throw std::runtime_error("chunk_size doit etre >= 1");
+    if (R.frag_mask < 0 || R.frag_mask > 3)      throw std::runtime_error("frag_mask doit etre 0, 1, 2 ou 3");
+    if (R.step_size_target <= 0.0)               throw std::runtime_error("step_size_target doit etre > 0");
+    if (cfg.dkg <= 0.0 || cfg.dga <= 0.0)        throw std::runtime_error("dkg et dga doivent etre > 0");
+    if (cfg.ve_kg <= 0.0 || cfg.ve_ga <= 0.0)    throw std::runtime_error("ve_kg et ve_ga doivent etre > 0");
+    if (cfg.delta_t <= 0.0)                      throw std::runtime_error("delta_t doit etre > 0");
+    if (pp.pad_size <= 0.0 || pp.inter_pad < 0.0) throw std::runtime_error("pad_size > 0 et inter_pad >= 0 requis");
+}
+
+int main(int argc, char* argv[]) {
+  // Usage : process fichier.cfg [cle=valeur ...]
+  //   Tous les parametres sont dans le fichier d'input (voir t2f.cfg).
+  //   Les arguments cle=valeur surchargent le fichier, par exemple :
+  //       ./process t2f.cfg n_events=200 seuil_qt_pos=0 seuil_qt_neg=0
+  //   n_threads = 1 : tirages reproductibles d'une version a l'autre.
+
+    if (argc < 2) {
+        std::cerr << "Usage : " << argv[0] << " fichier.cfg [cle=valeur ...]\n";
+        return 1;
+    }
 
     //Mesure du temps cpu
     double wall0 = omp_get_wtime();
-    
+
+    // --- Lecture du fichier d'input et des surcharges ---
+    ConfigFile     conf;
+    RunParams      R;
+    DetectorConfig cfg;
+    PadPlaneParams pParam;
+    try {
+        conf.load(argv[1]);
+        for (int a = 2; a < argc; ++a) conf.set_override(argv[a]);
+        read_config(conf, R, cfg, pParam);
+    } catch (const std::exception& e) {
+        std::cerr << "Erreur de configuration : " << e.what() << "\n";
+        return 1;
+    }
+
+    const std::string in_path  = R.in_path;
+    const std::string out_path = R.out_path;
+    const uint64_t    base_seed = (uint64_t)R.base_seed;
+    const hsize_t     chunk_size = (hsize_t)R.chunk_size;
+    const int         nthreads  = R.n_threads;
+    const int         frag_mask = R.frag_mask;
+
+    std::cout << "Fichier d'input   = " << argv[1] << "\n";
+    std::cout << "input_file        = " << in_path  << "\n";
+    std::cout << "output_file       = " << out_path << "\n";
+
     // --- Lecture metadata ---
     H5Reader reader(in_path);
     const hsize_t N_total = reader.size("/H/KE");
     const double step_size_in = reader.read_attribute<double>("/metadata", "step_size") / 10.0;
 
-    const hsize_t N = (argc > 1) ? std::min((hsize_t)std::stoul(argv[1]), N_total) : N_total;
+    const hsize_t N = (R.n_events > 0) ? std::min((hsize_t)R.n_events, N_total) : N_total;
 
-    const double step_size_target = 0.05;
+    const double step_size_target = R.step_size_target;
     const int    n_merge          = std::max(1, (int)(step_size_target / step_size_in));
     const double step_size_eff    = n_merge * step_size_in;
 
@@ -84,17 +189,16 @@ int main(int argc, char* argv[]) {
     std::cout << "step_size_eff     = " << step_size_eff * 10  << " mm\n";
     std::cout << "Events à traiter  = " << N                   << "\n";
 
-    // --- Configuration détecteur ---
-    DetectorConfig cfg ;
     cfg.step_size = step_size_eff;
-    if (argc > 2) cfg.seuil_qt_pos = std::stod(argv[2]);
-    if (argc > 3) cfg.seuil_qt_neg = std::stod(argv[3]);
     std::cout << "seuil_qt_pos      = " << cfg.seuil_qt_pos << " e-\n";
     std::cout << "seuil_qt_neg      = " << cfg.seuil_qt_neg << " e-\n";
+    std::cout << "eps_qt            = " << cfg.eps_qt << " e-\n";
+    std::cout << "frag_mask         = " << frag_mask << "\n";
+    std::cout << "\n\033[1;32m" << nthreads << " running threads...\033[0m\n\n";
+
+    const std::vector<double> empty_vec;      // trace vide, en lecture seule (thread-safe)
 
     // --- Plan de pads ---
-    PadPlaneParams pParam ;
-    
     PadPlane plane(pParam, cfg);   // construit aussi la table d'induction (~3 s, ~80 Mo)
 
     std::ofstream pad_file("my_pad.txt");
@@ -115,11 +219,14 @@ int main(int argc, char* argv[]) {
 
     writer.write_attribute_string("/metadata", "created",    tbuf);
     writer.write_attribute_string("/metadata", "input_file", in_path);
+    writer.write_attribute_string("/metadata", "config_file", std::string(argv[1]));
+    writer.write_attribute_string("/metadata", "config_text", conf.text());
 
     writer.write_attribute<double>("/metadata", "step_size_in",  step_size_in);
     writer.write_attribute<double>("/metadata", "step_size_eff", step_size_eff);
     writer.write_attribute<int>   ("/metadata", "n_merge",       n_merge);
     writer.write_attribute<int>   ("/metadata", "n_events",      (int)N);
+    writer.write_attribute<int>   ("/metadata", "frag_mask",       frag_mask);
 
     writer.write_attribute<double>("/metadata", "dkg",           cfg.dkg);
     writer.write_attribute<double>("/metadata", "dga",           cfg.dga);
@@ -149,7 +256,8 @@ int main(int argc, char* argv[]) {
     writer.write_attribute<double>("/metadata", "bound_margin", pParam.bound_margin);
     writer.write_attribute<int>("/metadata", "n_tau", plane.table().n_tau());
     writer.write_attribute<int>("/metadata", "n_pads", (int)plane.pads().size());
-
+    writer.write_attribute<double>("/metadata", "eps_qt", cfg.eps_qt);
+    
     for (const std::string &frag : {"/H", "/L"}) {
       writer.add_dataset<float>     (frag + "/KE");
       writer.add_dataset<float>     (frag + "/theta");
@@ -164,26 +272,13 @@ int main(int argc, char* argv[]) {
       writer.add_vlen_dataset<float>(frag + "/px");
       writer.add_vlen_dataset<float>(frag + "/py");
       writer.add_vlen_dataset<float>(frag + "/pq");
-      writer.add_vlen_dataset<float>(frag + "/pt");        
-      writer.add_vlen_dataset<float>(frag + "/pqt");        
+      writer.add_vlen_dataset<int32_t>(frag + "/pk0");
+      writer.add_vlen_dataset<float>(frag + "/pqt");
       writer.add_vlen_dataset<float>(frag + "/pnt");        
       writer.add_vlen_dataset<float>(frag + "/pid");
       //        writer.add_vlen_dataset<float>     (frag + "/pQ");        
     }
-
-    // --- Boucle par chunks ---
-    const hsize_t chunk_size = 20000;
-    int           nthreads   = 8;
-    if (argc > 4) nthreads = std::max(1, std::stoi(argv[4]));
-
-    std::cout << "\n\033[1;32m" << nthreads << " running threads...\033[0m\n\n";
-
-    int frag_mask = 3;
-    if (argc > 5) frag_mask = std::stoi(argv[5]);
-    std::cout << "frag_mask         = " << frag_mask << "\n";
-    const std::vector<double> empty_vec;      // trace vide, en lecture seule (thread-safe)
     
-    const uint64_t base_seed = 42;
     std::vector<Processor> procs;
     procs.reserve(nthreads);
     for (int t = 0; t < nthreads; ++t)
@@ -216,12 +311,13 @@ int main(int argc, char* argv[]) {
 
         std::vector<std::vector<float>> H_x(count), H_y(count), H_z(count), H_dE(count);
         std::vector<std::vector<float>> H_px(count), H_py(count), H_pq(count);
-        std::vector<std::vector<float>> H_pt(count), H_pqt(count), H_pQ(count);
-        std::vector<std::vector<int32_t>> H_pnt(count), H_pid(count);
+        std::vector<std::vector<float>> H_pqt(count), H_pQ(count);
+        std::vector<std::vector<int32_t>> H_pnt(count), H_pid(count), H_pk0(count);
+	
         std::vector<std::vector<float>> L_x(count), L_y(count), L_z(count), L_dE(count);
         std::vector<std::vector<float>> L_px(count), L_py(count), L_pq(count);
-        std::vector<std::vector<float>> L_pt(count), L_pqt(count), L_pQ(count);
-        std::vector<std::vector<int32_t>> L_pnt(count), L_pid(count);
+        std::vector<std::vector<float>> L_pqt(count), L_pQ(count);
+        std::vector<std::vector<int32_t>> L_pnt(count), L_pid(count), L_pk0(count);
 
         std::vector<std::vector<PadCharge>> H_pads(count), L_pads(count);
 
@@ -263,9 +359,9 @@ int main(int argc, char* argv[]) {
             
             // double Sum = 0.0;
             for (const auto& pc : H_pads[i]) {
-                H_pnt[i].push_back((int32_t)pc.t.size());
-                for (double t : pc.t)  H_pt[i].push_back((float)t);
-                for (double qt : pc.qt) H_pqt[i].push_back((float)qt);
+                H_pnt[i].push_back((int32_t)pc.qt.size());
+		H_pk0[i].push_back((int32_t)pc.k0);
+		for (double qt : pc.qt) H_pqt[i].push_back((float)qt);
 		//                for (double Qc : pc.Q)  H_pQ[i].push_back(Qc);
                 H_px[i].push_back((float)pc.x);
                 H_py[i].push_back((float)pc.y);
@@ -284,9 +380,9 @@ int main(int argc, char* argv[]) {
             L_x[i] = to_float(out.L.x); L_y[i] = to_float(out.L.y); L_z[i] = to_float(out.L.z); L_dE[i] = to_float(out.L.dE);
 
             for (const auto& pc : L_pads[i]) {
-                L_pnt[i].push_back((int32_t)pc.t.size());
-                for (double t : pc.t)  L_pt[i].push_back((float)t);
-                for (double qt : pc.qt) L_pqt[i].push_back((float)qt);
+                L_pnt[i].push_back((int32_t)pc.qt.size());
+		L_pk0[i].push_back((int32_t)pc.k0);
+		for (double qt : pc.qt) L_pqt[i].push_back((float)qt);
 		//                for (double Qc : pc.Q)  L_pQ[i].push_back(Qc);
                 L_px[i].push_back((float)pc.x);
                 L_py[i].push_back((float)pc.y);
@@ -311,7 +407,7 @@ int main(int argc, char* argv[]) {
         timed_vlen<float> (writer, "/H/px",  H_px,  start);
         timed_vlen<float> (writer, "/H/py",  H_py,  start);
         timed_vlen<float> (writer, "/H/pq",  H_pq,  start);
-        timed_vlen<float> (writer, "/H/pt",  H_pt,  start);
+        timed_vlen<int32_t> (writer, "/H/pk0", H_pk0, start);
         timed_vlen<float> (writer, "/H/pqt", H_pqt, start);
 	//        timed_vlen<float> (writer, "/H/pQ",  H_pQ,  start);
         timed_vlen<int32_t> (writer, "/H/pnt", H_pnt, start);
@@ -331,7 +427,7 @@ int main(int argc, char* argv[]) {
         timed_vlen<float>(writer, "/L/px",  L_px,  start);
         timed_vlen<float>(writer, "/L/py",  L_py,  start);
         timed_vlen<float>(writer, "/L/pq",  L_pq,  start);
-        timed_vlen<float>(writer, "/L/pt",  L_pt,  start);
+        timed_vlen<int32_t> (writer, "/L/pk0", L_pk0, start);
         timed_vlen<float>(writer, "/L/pqt", L_pqt, start);
 	//        timed_vlen<float>(writer, "/L/pQ",  L_pQ,  start);
         timed_vlen<int32_t>(writer, "/L/pnt", L_pnt, start);

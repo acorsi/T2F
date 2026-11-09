@@ -2,6 +2,7 @@
 #include "psi_builder.hpp"
 #include <cmath>
 #include <stdexcept>
+#include <iostream>
 
 namespace {
 
@@ -12,6 +13,31 @@ void lagrange4(double t, double* w) {
     w[1] =  (t + 1.0) * (t - 1.0) * (t - 2.0) / 2.0;
     w[2] = -(t + 1.0) * t * (t - 2.0) / 2.0;
     w[3] =  (t + 1.0) * t * (t - 1.0) / 6.0;
+}
+
+// Accumulation flux par flux, taille fixe (le compilateur peut dérouler et garder acc en registres)
+template<int NT>
+void accumulate_fixed(const float* const* ptr, const float* wgt, int ns, float* out) {
+    float acc[NT];
+    for (int n = 0; n < NT; ++n) acc[n] = 0.0f;
+    for (int s = 0; s < ns; ++s) {
+        const float* p = ptr[s];
+        const float  w = wgt[s];
+        for (int n = 0; n < NT; ++n) acc[n] += w * p[n];
+    }
+    for (int n = 0; n < NT; ++n) out[n] = acc[n];
+}
+
+// Même chose pour un n_tau quelconque (<= 256)
+void accumulate_generic(const float* const* ptr, const float* wgt, int ns, int n_tau, float* out) {
+    float acc[256];
+    for (int n = 0; n < n_tau; ++n) acc[n] = 0.0f;
+    for (int s = 0; s < ns; ++s) {
+        const float* p = ptr[s];
+        const float  w = wgt[s];
+        for (int n = 0; n < n_tau; ++n) acc[n] += w * p[n];
+    }
+    for (int n = 0; n < n_tau; ++n) out[n] = acc[n];
 }
 
 } // namespace
@@ -30,11 +56,20 @@ TableParams default_table_params(const DetectorConfig& cfg, double pitch) {
     tp.n_d      = 10;
     tp.n_out    = 100;
     tp.step_out = pitch / 16.0;
-    tp.n_h      = 25;
-    tp.tau_max_ns = 400.0;
     tp.n_img    = 10;
     tp.m_cells  = 8;
-    tp.r_src    = 2.2;
+    tp.r_src = 2.2;
+
+    double T = cfg.dga / cfg.ve_ga;                       // temps de collecte dans le gap
+    tp.n_h = (int)(T / cfg.delta_t + 0.5);
+    if (tp.n_h < 2) tp.n_h = 2;
+    if (std::fabs(T / cfg.delta_t - tp.n_h) > 1.0e-6)
+      std::cerr << "ATTENTION : dga/(ve_ga*delta_t) = " << T / cfg.delta_t
+		<< " n'est pas entier : voie lente et borne de selection a revoir\n";
+    double s_kg = cfg.DL_kg * std::sqrt(cfg.dkg) / cfg.ve_kg;
+    double s_ga = cfg.DL_ga * std::sqrt(cfg.dga) / cfg.ve_ga;
+    tp.tau_max_ns = T + 5.0 * std::sqrt(s_kg * s_kg + s_ga * s_ga);
+
     return tp;
 }
 
@@ -319,9 +354,8 @@ void PsiTable::psi_vector_f(double u, double v, double d, float* out) const {
 }
 
 void PsiTable::psi_vector_g(double u, double v, double d, float* out) const {
-    const int NT = 54;
     const int n_tau = m_max - m_min + 1;
-    if (n_tau != NT) { psi_vector_f(u, v, d, out); return; }
+    if (n_tau > 256) { psi_vector_f(u, v, d, out); return; }
     const int n_out = m_tp.n_out;
 
     if (d < 0.0) d = 0.0;
@@ -339,7 +373,7 @@ void PsiTable::psi_vector_g(double u, double v, double d, float* out) const {
     int i0 = (int)xu;
     int j0 = (int)xv;
     if (i0 >= n_out || j0 >= n_out) {
-        for (int n = 0; n < NT; ++n) out[n] = 0.0f;
+        for (int n = 0; n < n_tau; ++n) out[n] = 0.0f;
         return;
     }
     double wu[4], wv[4];
@@ -368,17 +402,12 @@ void PsiTable::psi_vector_g(double u, double v, double d, float* out) const {
         }
     }
 
-    // accumulation : une lecture contiguë de 54 floats par flux
-    float acc[NT];
-    for (int n = 0; n < NT; ++n) acc[n] = 0.0f;
-    for (int s = 0; s < ns; ++s) {
-        const float* p = ptr[s];
-        const float  w = wgt[s];
-        for (int n = 0; n < NT; ++n) acc[n] += w * p[n];
+    switch (n_tau) {
+        case 54: accumulate_fixed<54>(ptr, wgt, ns, out); break;   // dga = 5 mm
+        case 44: accumulate_fixed<44>(ptr, wgt, ns, out); break;   // dga = 3 mm
+        default: accumulate_generic(ptr, wgt, ns, n_tau, out); break;
     }
-    for (int n = 0; n < NT; ++n) out[n] = acc[n];
 }
-
 
 void PsiTable::edges_values_f(const float* p, const int* idx, const double* w,
                               int nedges, double* out) const {
