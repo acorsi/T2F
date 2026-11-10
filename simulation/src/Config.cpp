@@ -11,7 +11,7 @@ Config readConfig(const std::string& filename)
 
   static const std::unordered_set<std::string> known = {
     "sequential", "parallel", "skipgefline", "events",
-    "elossmodel", "elosstreat", "stepsize", "pressure"};
+    "elossmodel", "elosstreat", "stepsize", "pressure", "evgenerator"};
   
   std::ifstream fin(filename);
 

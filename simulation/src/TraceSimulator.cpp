@@ -3,24 +3,26 @@
 #include <random>
 
 TraceSimulator::TraceSimulator (Material* material, 
-                               IEnergyLossCalculator* energyLossCalc,
+                               DeDx_REAL* energyLossCalc,
 			       IStragglingAndNoiseCalculator* stragglingCalc,
-                               double stepSize)
+                               double stepSize, PHD* phdCalc)
   : stepSize_(stepSize), rng_(std::random_device{}()), uniform_(0.0,1.0) {
     material_ = std::unique_ptr<Material>(material);
-    energyLossCalc_ = std::unique_ptr<IEnergyLossCalculator>(energyLossCalc);
+    PHDCalc_.reset(phdCalc);
+    energyLossCalc_ = std::unique_ptr<DeDx_REAL>(energyLossCalc);
     stragglingAndNoiseCalc_ = std::unique_ptr<IStragglingAndNoiseCalculator>(stragglingCalc) ;
 
 
 }
 
-std::tuple<std::vector<double>, std::vector<double>, double> TraceSimulator::simulate(const Fragment& fragment) const {
+std::tuple<std::vector<double>, std::vector<double>, double, std::vector<double>> TraceSimulator::simulate(const Fragment& fragment) const {
   return propagateFragment(fragment.getA(), fragment.getZ(), fragment.getKineticEnergy());
 }
 
-std::tuple<std::vector<double>, std::vector<double>, double> TraceSimulator::propagateFragment(int A, int Z, double initialEnergy) const {
+std::tuple<std::vector<double>, std::vector<double>, double, std::vector<double>> TraceSimulator::propagateFragment(int A, int Z, double initialEnergy) const {
   std::vector<double> clean;
   std::vector<double> noisy;
+  std::vector<double> phd;
   
   Particle particle(static_cast<double>(Z), static_cast<double>(A), initialEnergy);
   double currentEnergy = initialEnergy;
@@ -28,10 +30,14 @@ std::tuple<std::vector<double>, std::vector<double>, double> TraceSimulator::pro
   int NStep = stepSize_/elementalStep ;
   
   energyLossCalc_->initParticle(&particle) ;
+  PHDCalc_->initParticle(&particle);
   
   double range=0.0;
   
   while (currentEnergy > 0.0) {
+    // PHD difference (MeV) across each raw-trace step.
+    particle.SetTKE(currentEnergy);
+    const double phdBefore = PHDCalc_->computePHD(&particle, *material_);
     
     //On fait des pas de 40 microns pour calculer la perte d'énergie sur épaisseur totale stepSize_
     //Attention si stepSize_ pas multiple de elementalStep => pas géré.
@@ -82,6 +88,13 @@ std::tuple<std::vector<double>, std::vector<double>, double> TraceSimulator::pro
       dEdxsum+=dEdx ;
       
     }
+    particle.SetTKE(currentEnergy);
+    const double phdAfter = PHDCalc_->computePHD(&particle, *material_);
+    if((phdBefore - phdAfter) >= dEdxsum)
+        phd.push_back(dEdxsum);
+    else
+        phd.push_back(phdBefore - phdAfter);
+//    phd.push_back(phdAfter);
     clean.push_back(dEdxsum) ;
     
     if(currentEnergy>0){
@@ -119,5 +132,5 @@ std::tuple<std::vector<double>, std::vector<double>, double> TraceSimulator::pro
   
   //std::cout << A << " " << Z << " " << initialEnergy << " " << range << std::endl ;
   
-  return {clean, noisy, range};
+  return {clean, noisy, range, phd};
 }

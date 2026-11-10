@@ -75,10 +75,12 @@ private:
 */
   std::vector<std::vector<double>> betheTrace_light_;
   std::vector<std::vector<double>>rawTrace_light_;
+  std::vector<std::vector<double>> phdTrace_light_;
   std::vector<std::vector<double>>denoisedTrace_light_;
   
   std::vector<std::vector<double>>betheTrace_heavy_;
   std::vector<std::vector<double>>rawTrace_heavy_;
+  std::vector<std::vector<double>> phdTrace_heavy_;
   std::vector<std::vector<double>>denoisedTrace_heavy_;
   std::vector<double> angle_;
   size_t bufferSize_;

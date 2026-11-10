@@ -2,7 +2,8 @@
 #define TRACE_SIMULATOR_H
 
 #include "Fragment.h"
-#include "IEnergyLossCalculator.h"
+#include "PHD.h"
+#include "DeDx_REAL.h"
 #include "IStragglingAndNoiseCalculator.h"
 #include "Material.h"
 #include <vector>
@@ -13,11 +14,12 @@
 class TraceSimulator {
 private:
   std::unique_ptr<Material> material_;
-  std::unique_ptr<IEnergyLossCalculator> energyLossCalc_;  // <- Polymorphique !
+  std::unique_ptr<DeDx_REAL> energyLossCalc_;  // <- Polymorphique !
+  std::unique_ptr<PHD> PHDCalc_;  // <- Polymorphique !
   std::unique_ptr<IStragglingAndNoiseCalculator> stragglingAndNoiseCalc_ ;
   double stepSize_;
   
-  std::tuple<std::vector<double>, std::vector<double>, double> propagateFragment(int A, int Z, double initialEnergy) const;
+  std::tuple<std::vector<double>, std::vector<double>, double, std::vector<double>> propagateFragment(int A, int Z, double initialEnergy) const;
   
 public:
   /**
@@ -27,15 +29,16 @@ public:
    * @param stepSize Pas de propagation en mm
    */
   TraceSimulator(Material* material, 
-		 IEnergyLossCalculator* energyLossCalc,
+		 DeDx_REAL* energyLossCalc,
 		 IStragglingAndNoiseCalculator* stragglingCalc,
-		 double stepSize = 1.0);
+		 double stepSize, PHD* phdCalc);
   
-  std::tuple<std::vector<double>, std::vector<double>, double> simulate(const Fragment& fragment) const;
+  std::tuple<std::vector<double>, std::vector<double>, double, std::vector<double>> simulate(const Fragment& fragment) const;
   
   double getStepSize() const { return stepSize_; }
   Material* getMaterial() { return material_.get(); }
-  IEnergyLossCalculator* getEnergyLossCalculator() { return energyLossCalc_.get(); }
+  DeDx_REAL* getEnergyLossCalculator() { return energyLossCalc_.get(); }
+  PHD* getPHDCalculator() { return PHDCalc_.get(); }
   IStragglingAndNoiseCalculator* getStragglingCalculator() { return stragglingAndNoiseCalc_.get(); }
   mutable std::mt19937 rng_ ;
   mutable std::uniform_real_distribution<double> uniform_ ;
