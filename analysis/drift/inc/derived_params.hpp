@@ -40,7 +40,7 @@ struct TableOptions {
     std::string ignore;        // identifiants de controles a ignorer, separes par des virgules
 
     TableOptions()
-        : n_d(10), n_img(10), m_cells(0), step_out(0.0), r_src(0.0), max_table_mb(500.0), R(0), tau_tol(0.005), tau_dmin(2.0), tau_Rref(12) {}
+        : n_d(10), n_img(20), m_cells(0), step_out(0.0), r_src(0.0), max_table_mb(500.0), R(0), tau_tol(0.005), tau_dmin(2.0), tau_Rref(12) {}
 };
 
 struct DerivedParams {
@@ -370,7 +370,7 @@ inline int resolve_table_R(const DetectorConfig& cfg, const PadPlaneParams& pp,
           << opt.max_table_mb << ") : resolution en tau non verifiable. Augmenter max_table_mb, diminuer "
           << "table_tau_Rref, ou imposer table_R avec table_tau_tol = 0.";
         chk.fail("tau_resolution", s.str());
-        return automatique ? 1 : opt.R;
+        return automatique ? 6 : opt.R;
     }
     std::cout << "Controle de la resolution en tau (tolerance " << 100.0 * opt.tau_tol << " %, voxels a d >= "
               << opt.tau_dmin << " cm, reference R = " << Rref << ") :\n";
@@ -440,8 +440,7 @@ inline void check_table(const PsiTable& t, const DerivedParams& D, CheckList& ch
     if (t.phi_edge_max() > 1.0e-6) {
         std::ostringstream s;
         s << "phi vaut " << t.phi_edge_max() << " (> 1e-6) au bord de la source r_src = " << D.tp.r_src
-          << " cm : source tronquee trop tot. Augmenter table_r_src (par exemple " << 1.5 * D.tp.r_src
-          << " cm).";
+          << " cm : source tronquee trop tot. Augmenter table_n_img." ;
         chk.fail("phi_edge", s.str());
     }
 }

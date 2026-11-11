@@ -120,7 +120,7 @@ static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPla
 
     // --- table d'induction (0 = automatique) et controles ---
     to.n_d          = c.get_int   ("table_n_d",      10);
-    to.n_img        = c.get_int   ("table_n_img",    10);
+    to.n_img        = c.get_int   ("table_n_img",    20);
     to.m_cells      = c.get_int   ("table_m_cells",  0);
     to.step_out     = c.get_double("table_step_out", 0.0);
     to.r_src        = c.get_double("table_r_src",    0.0);
@@ -136,7 +136,7 @@ static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPla
 
     // --- verifications elementaires ---
     if (to.n_d < 4)                              throw std::runtime_error("table_n_d doit etre >= 4");
-    if (to.R < 0 || to.R > 8)                    throw std::runtime_error("table_R doit etre entre 0 (auto) et 8");
+    if (to.R < 0 || to.R > 12)                   throw std::runtime_error("table_R doit etre entre 0 (auto) et 12");
     if (to.tau_tol < 0.0 || to.tau_dmin < 0.0)   throw std::runtime_error("table_tau_tol et table_tau_dmin doivent etre >= 0");
     if (to.tau_Rref < 2 || to.tau_Rref > 32)     throw std::runtime_error("table_tau_Rref doit etre entre 2 et 32");
     if (to.n_img < 1)                            throw std::runtime_error("table_n_img doit etre >= 1");
