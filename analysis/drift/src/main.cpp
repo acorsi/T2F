@@ -119,11 +119,15 @@ static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPla
     pp.bound_margin = c.get_double("bound_margin", pp.bound_margin);
 
     // --- table d'induction (0 = automatique) et controles ---
-    to.n_d          = c.get_int   ("table_n_d",      10);
+    to.n_d          = c.get_int   ("table_n_d",      20);
     to.n_img        = c.get_int   ("table_n_img",    20);
     to.m_cells      = c.get_int   ("table_m_cells",  0);
     to.step_out     = c.get_double("table_step_out", 0.0);
     to.r_src        = c.get_double("table_r_src",    0.0);
+    to.kappa        = c.get_double("table_kappa",    3.0);
+    to.step_cap     = c.get_double("table_step_cap", 0.0);
+    to.acc_tol      = c.get_double("table_acc_tol",  1.0e-3);
+    to.reach_tol    = c.get_double("reach_tol",      1.0e-5);
     to.max_table_mb = c.get_double("max_table_mb",   500.0);
     to.R            = c.get_int   ("table_R",        0);
     to.tau_tol      = c.get_double("table_tau_tol",  0.005);
@@ -140,6 +144,9 @@ static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPla
     if (to.tau_tol < 0.0 || to.tau_dmin < 0.0)   throw std::runtime_error("table_tau_tol et table_tau_dmin doivent etre >= 0");
     if (to.tau_Rref < 2 || to.tau_Rref > 32)     throw std::runtime_error("table_tau_Rref doit etre entre 2 et 32");
     if (to.n_img < 1)                            throw std::runtime_error("table_n_img doit etre >= 1");
+    if (to.kappa < 0.0 || (to.kappa > 0.0 && to.kappa < 1.0))
+                                                 throw std::runtime_error("table_kappa doit etre 0 (grille uniforme) ou >= 1");
+    if (to.step_cap < 0.0 || to.acc_tol < 0.0)   throw std::runtime_error("table_step_cap et table_acc_tol doivent etre >= 0");
     if (to.step_out < 0.0 || to.r_src < 0.0 || to.m_cells < 0)
                                                  throw std::runtime_error("table_step_out, table_r_src, table_m_cells doivent etre >= 0");
     if (R.n_events < 0)                          throw std::runtime_error("n_events doit etre >= 0");
@@ -239,7 +246,7 @@ int main(int argc, char* argv[]) {
     PadPlane plane(pParam, cfg, D.tp, D.reach_cm);   // construit aussi la table d'induction
 
     try {
-        check_table(plane.table(), D, checks);
+        check_table(plane.table(), D, checks, topt.acc_tol, topt.reach_tol);
         checks.finish();
     } catch (const std::exception& e) {
         std::cerr << "\nArret : " << e.what() << "\n";
@@ -310,6 +317,8 @@ int main(int argc, char* argv[]) {
     writer.write_attribute<double>("/metadata", "T_gap_last_step_ns", D.T_frac_ns);
     writer.write_attribute<int>   ("/metadata", "table_n_out",    D.tp.n_out);
     writer.write_attribute<double>("/metadata", "table_step_out", D.tp.step_out);
+    writer.write_attribute<int>   ("/metadata", "table_adaptive", D.tp.adaptive);
+    writer.write_attribute<double>("/metadata", "table_kappa",    topt.kappa);
     writer.write_attribute<double>("/metadata", "table_r_src",    D.tp.r_src);
     writer.write_attribute<int>   ("/metadata", "table_m_cells",  D.tp.m_cells);
     writer.write_attribute<int>   ("/metadata", "table_n_img",    D.tp.n_img);
@@ -351,6 +360,9 @@ int main(int argc, char* argv[]) {
         std::vector<std::vector<double>>(plane.pads().size(),
                                          std::vector<double>(n_bins, 0.0)));
 
+    long n_cathode_total = 0;      // traces (fragments) qui depassent la cathode (z < 0)
+    long n_grid_total    = 0;      // traces (fragments) coupees a la grille (z >= dkg)
+
     for (hsize_t start = 0; start < N; start += chunk_size) {
         hsize_t count = std::min(chunk_size, N - start);
 
@@ -382,7 +394,8 @@ int main(int argc, char* argv[]) {
 
         std::vector<std::vector<PadCharge>> H_pads(count), L_pads(count);
 
-#pragma omp parallel for num_threads(nthreads) schedule(dynamic, 16)
+        long n_cathode = 0, n_grid = 0;
+#pragma omp parallel for num_threads(nthreads) schedule(dynamic, 16) reduction(+:n_cathode, n_grid)
         for (hsize_t i = 0; i < count; ++i) {
           int tid = omp_get_thread_num();
 	  procs[tid].reseed(mix_seed(base_seed, start + i));
@@ -393,6 +406,16 @@ int main(int argc, char* argv[]) {
 
             EventOutput out;
             procs[tid].process(in, out);
+
+            // trace hors du volume de derive : cathode (z < 0) ou grille (la trace est alors coupee a z = dkg)
+            if (frag_mask & 1) {
+                if (out.H.z.size() < in.H.raw_trace.size()) ++n_grid;
+                for (size_t k = 0; k < out.H.z.size(); ++k) if (out.H.z[k] < 0.0) { ++n_cathode; break; }
+            }
+            if (frag_mask & 2) {
+                if (out.L.z.size() < in.L.raw_trace.size()) ++n_grid;
+                for (size_t k = 0; k < out.L.z.size(); ++k) if (out.L.z[k] < 0.0) { ++n_cathode; break; }
+            }
 	    
 	    FragTrace fH = { &out.H.x, &out.H.y, &out.H.z, &out.H.n_electrons, &out.H.sigma_T };
             FragTrace fL = { &out.L.x, &out.L.y, &out.L.z, &out.L.n_electrons, &out.L.sigma_T };
@@ -453,6 +476,14 @@ int main(int argc, char* argv[]) {
         }
 
         auto t2 = std::chrono::steady_clock::now();
+
+        n_cathode_total += n_cathode;
+        n_grid_total    += n_grid;
+        if (n_cathode > 0 || n_grid > 0) {
+            std::cout << "\033[1;31mATTENTION (evenements " << start << " a " << start + count - 1 << ") : "
+                      << n_cathode << " trace(s) depassent la cathode (z < 0 ; voxels conserves, d limite a dkg dans la table), "
+                      << n_grid << " trace(s) coupee(s) a la grille (z >= dkg ; voxels suivants ignores)\033[0m\n";
+        }
 
 	writer.write_chunk<float>("/H/KE", H_KEf, start);
         writer.write_chunk<float> ("/H/theta", H_theta, start);
@@ -567,6 +598,12 @@ int main(int argc, char* argv[]) {
     std::cout << "traces traitées : " << pad_traces_count()
               << " ; avec au moins un voxel au-delà de r_active : "
               << pad_traces_beyond_count() << "\n";
+
+    if (n_cathode_total > 0 || n_grid_total > 0) {
+        std::cout << "\033[1;31mATTENTION : " << n_cathode_total << " trace(s) ont depasse la cathode et "
+                  << n_grid_total << " ont ete coupees a la grille sur l'ensemble du run. "
+                  << "Verifier dkg et la position du vertex.\033[0m\n";
+    }
 
     std::cout << "\nTemps réel total : " << omp_get_wtime() - wall0 << " s\n";
     for (std::map<std::string,double>::const_iterator it = g_wt.begin(); it != g_wt.end(); ++it)

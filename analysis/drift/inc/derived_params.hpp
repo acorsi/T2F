@@ -37,10 +37,14 @@ struct TableOptions {
     double      tau_tol;       // erreur relative toleree sur le signal (interpolation en tau) ; 0 = pas de controle
     double      tau_dmin;      // distance de derive minimale (cm) des voxels pour ce controle
     int         tau_Rref;      // R de la table de reference du controle (>= 8 pour le choix automatique)
+    double      kappa;         // > 0 : grille (u,v) adaptative, pas_k = sigma_k / kappa (0 = grille uniforme, comportement d'origine)
+    double      step_cap;      // mode adaptatif : plafond du pas (cm), 0 = pitch / 8
+    double      acc_tol;       // tolerance du controle de la table (charge finale par pad et somme des pads) ; 0 = pas de controle
+    double      reach_tol;     // perte toleree par la coupure de portee (fraction de la charge d'un voxel, par bin) ; 0 = pas de controle
     std::string ignore;        // identifiants de controles a ignorer, separes par des virgules
 
     TableOptions()
-        : n_d(10), n_img(20), m_cells(0), step_out(0.0), r_src(0.0), max_table_mb(500.0), R(0), tau_tol(0.005), tau_dmin(2.0), tau_Rref(12) {}
+        : n_d(20), n_img(20), m_cells(0), step_out(0.0), r_src(0.0), max_table_mb(500.0), R(0), tau_tol(0.005), tau_dmin(2.0), tau_Rref(12), kappa(3.0), step_cap(0.0), acc_tol(1.0e-3), reach_tol(1.0e-5) {}
 };
 
 struct DerivedParams {
@@ -70,9 +74,12 @@ inline const std::vector<std::string>& check_ids() {
         ids.push_back("tau_resolution");
         ids.push_back("step_out_coarse");
         ids.push_back("reach_small");
+        ids.push_back("reach_loss");
         ids.push_back("table_memory");
         ids.push_back("ring_geometry");
         ids.push_back("phi_edge");
+        ids.push_back("table_accuracy");
+        ids.push_back("m_cells_coarse");
     }
     return ids;
 }
@@ -195,20 +202,45 @@ inline DerivedParams derive_params(const DetectorConfig& cfg, const PadPlanePara
     tp.dtau  = D.dtau;
     tp.tau_max_ns = D.tau_max_ns;
 
+    // cellules de la source (cote a/m_cells). Le profil temporel de Psi pres d'un bord de pad varie sur
+    // l'echelle de l'etalement transverse minimal sigma_gap = DT_ga sqrt(g) (diffusion dans le gap seul) :
+    // le balayage de tests/sweep_all.py (20 configurations gaz x geometrie) donne une erreur d'environ
+    // 3e-4 a 6e-4 pour a/m_cells = sigma_gap / 3.5 et de l'ordre de 1e-3 a sigma_gap / 2.
+    // Regle : m_cells = ceil(3.5 a / sigma_gap), au moins 8 ; jamais plus grossier que l'ancienne regle
+    // (sigma_gap >= g/15) ; plafonne a 64 (le temps de construction croit comme m_cells^2).
+    double sigma_gap = cfg.DT_ga * std::sqrt(g);
+    if (sigma_gap < g / 15.0) sigma_gap = g / 15.0;
+    int mc_auto = (int)std::ceil(3.5 * D.a / sigma_gap);
+    if (mc_auto < 8)  mc_auto = 8;
+    if (mc_auto > 64) mc_auto = 64;
+    tp.m_cells = (opt.m_cells > 0) ? opt.m_cells : mc_auto;
+    if (D.a / tp.m_cells > 0.45 * sigma_gap) {
+        std::ostringstream s;
+        s << "source de phi trop grossiere : cellule a/m_cells = " << D.a / tp.m_cells << " cm > 0.45 sigma_gap = "
+          << 0.45 * sigma_gap << " cm (sigma_gap = DT_ga sqrt(dga)). Le profil temporel de la table sera imprecis "
+          << "(> ~1e-3) pres des bords de pad. Augmenter table_m_cells (temps de construction en m_cells^2).";
+        chk.fail("m_cells_coarse", s.str());
+    }
+
     // pas des noeuds en u, v : au plus pitch/16 et au plus g/15 (la structure de Psi varie sur ~g)
     const double step_auto = std::min(D.pitch / 16.0, g / 15.0);
     tp.step_out = (opt.step_out > 0.0) ? opt.step_out : step_auto;
+    tp.adaptive = 0;
+    tp.step_cap = 0.0;
+    if (opt.kappa > 0.0) {
+        // pas adaptatif : le noeud d = 0 (sigma_0 = sqrt(DT_ga^2 g + plancher^2)) a le pas sigma_0 / kappa
+        const double plancher = 0.5 * D.a / tp.m_cells;
+        const double sigma0 = std::sqrt(cfg.DT_ga * cfg.DT_ga * g + plancher * plancher);
+        tp.adaptive = 1;
+        tp.step_out = sigma0 / opt.kappa;
+        tp.step_cap = (opt.step_cap > 0.0) ? opt.step_cap : D.pitch / 8.0;
+    }
     if (tp.step_out > g / 10.0) {
         std::ostringstream s;
         s << "table_step_out = " << tp.step_out << " cm est trop grossier pour dga = " << g
           << " cm (limite : dga/10 = " << g / 10.0 << " cm).";
         chk.fail("step_out_coarse", s.str());
     }
-
-    // cellules de la source : pas de source a/m_cells <= g/15, au moins 8 cellules par demi-pad
-    int mc_auto = (int)std::ceil(15.0 * D.a / g);
-    if (mc_auto < 8) mc_auto = 8;
-    tp.m_cells = (opt.m_cells > 0) ? opt.m_cells : mc_auto;
 
     // rayon de la source : phi decroit comme exp(-pi r / g) ; 6 g donne ~1e-8 (verifie apres coup : phi_edge)
     tp.r_src = (opt.r_src > 0.0) ? opt.r_src : std::sqrt(2.0) * D.a + 6.0 * g;
@@ -219,7 +251,7 @@ inline DerivedParams derive_params(const DetectorConfig& cfg, const PadPlanePara
 
     table_time_range(tp, D.dtau, D.m_min, D.m_max);
     D.n_tau    = D.m_max - D.m_min + 1;
-    D.table_mb = (double)tp.n_d * tp.n_out * tp.n_out * D.n_tau * 4.0 / 1.0e6;
+    D.table_mb = table_cells(tp) * D.n_tau * 4.0 / 1.0e6;
 
     if (D.table_mb > opt.max_table_mb) {
         std::ostringstream s;
@@ -327,13 +359,22 @@ inline TableParams tau_check_params(const DetectorConfig& cfg, const PadPlanePar
                                     const TableOptions& opt, int R, DerivedParams& D, double& mb)
 {
     TableOptions o = opt;  o.R = R;
+    // Le controle en tau compare des tables de R differents a (u,v,d) identiques : la finesse de la grille (u,v),
+    // de la source et de d n'y joue pas. On garde la configuration d'origine, rapide : grille uniforme,
+    // 10 noeuds en d, source auto d'origine (max(8, 15 a / g)).
+    o.kappa = 0.0;
+    if (o.n_d > 10) o.n_d = 10;
+    if (o.m_cells <= 0) {
+        const int mc_old = (int)std::ceil(15.0 * 0.5 * (pp.pad_size + pp.inter_pad) / cfg.dga);
+        o.m_cells = (mc_old < 8) ? 8 : mc_old;
+    }
     CheckList tmp;                                   // les echecs de ces calculs d'essai ne comptent pas
     D = derive_params(cfg, pp, o, tmp);
     TableParams tp = D.tp;
     const double uv_max = std::min(2.0 * D.pitch, D.reach_cm);
     const int n = (int)std::ceil(uv_max / tp.step_out) + 3;
     if (n < tp.n_out) tp.n_out = n;
-    mb = (double)tp.n_d * tp.n_out * tp.n_out * D.n_tau * 4.0 / 1.0e6;
+    mb = table_cells(tp) * D.n_tau * 4.0 / 1.0e6;
     return tp;
 }
 
@@ -416,6 +457,19 @@ inline int resolve_table_R(const DetectorConfig& cfg, const PadPlaneParams& pp,
     return automatique ? 6 : opt.R;
 }
 
+inline std::string grid_description(const TableParams& tp) {
+    std::vector<double> step;
+    std::vector<int> nk;
+    table_grid(tp, step, nk);
+    std::ostringstream s;
+    if (tp.adaptive)
+        s << "grille adaptative, pas = " << step[0] * 10.0 << " mm (d = 0) a " << step[tp.n_d - 1] * 10.0
+          << " mm (d = dkg),  n_out = " << nk[0] << " a " << nk[tp.n_d - 1];
+    else
+        s << "grille uniforme, pas = " << tp.step_out * 10.0 << " mm,  n_out = " << tp.n_out;
+    return s.str();
+}
+
 inline void print_derived(const DerivedParams& D, const DetectorConfig& cfg) {
     std::cout << "\n--- Parametres derives ---\n"
               << "pitch              = " << D.pitch * 10.0 << " mm    gap = " << cfg.dga * 10.0 << " mm\n"
@@ -424,7 +478,7 @@ inline void print_derived(const DerivedParams& D, const DetectorConfig& cfg) {
               << "dernier pas (partiel) = " << D.T_frac_ns << " ns (sur " << D.dtau << " ns)\n"
               << "plage en tau       = [" << D.m_min * D.dtau << ", " << D.m_max * D.dtau
               << "] ns    n_tau = " << D.n_tau << "\n"
-              << "noeuds u,v         : pas = " << D.tp.step_out * 10.0 << " mm    n_out = " << D.tp.n_out << "\n"
+              << "noeuds u,v         : " << grid_description(D.tp) << "\n"
               << "source phi         : m_cells = " << D.tp.m_cells << "    r_src = " << D.tp.r_src
               << " cm    n_img = " << D.tp.n_img << "    n_d = " << D.tp.n_d << "\n"
               << "portee d'induction = " << D.reach_cm << " cm\n"
@@ -432,8 +486,82 @@ inline void print_derived(const DerivedParams& D, const DetectorConfig& cfg) {
               << "n_bins             = " << D.n_bins << "    (queue du signal : " << D.tau_tail_ns << " ns)\n\n";
 }
 
+// ---------------------------------------------------------------------------
+// Controle de precision de la table : la charge FINALE induite sur un pad (plateau de Psi)
+// a une expression exacte dans le modele,
+//     [Phi((a-u)/s) - Phi((-a-u)/s)] * [Phi((a-v)/s) - Phi((-a-v)/s)] ,   s^2 = DT_kg^2 d + DT_ga^2 g ,
+// (Phi = fonction de repartition de la loi normale). On compare la table a cette formule en des points
+// choisis pres des bords et des coins du pad (la ou l'interpolation est la plus difficile), sur
+// toute la plage de d, puis on verifie que la somme des plateaux sur tout le pavage vaut 1.
+// Ce controle ne teste pas la forme en temps (voir tests/).
+// ---------------------------------------------------------------------------
+inline double normal_cdf(double x) { return 0.5 * std::erfc(-x / std::sqrt(2.0)); }
+
+inline double table_accuracy_error(const PsiTable& t, const DerivedParams& D, double* sum_err)
+{
+    const TableParams& tp = D.tp;
+    const double a = tp.a, p = 2.0 * tp.a;
+    const int nt = t.n_tau();
+    std::vector<double> vec(nt);
+    double worst = 0.0;
+    const int nd_test = 12;
+    const double d_lo = 0.05;
+    for (int id = 0; id < nd_test; ++id) {
+        double d = d_lo * std::pow(tp.d_max / d_lo, (double)id / (nd_test - 1));
+        double s = std::sqrt(tp.DT_kg * tp.DT_kg * d + tp.DT_ga * tp.DT_ga * tp.g);
+        // positions par rapport au bord du pad : -2 s, -s, 0, s, 2 s, et le centre
+        const double off[6] = { -2.0 * s, -1.0 * s, 0.0, 1.0 * s, 2.0 * s, -a };
+        for (int i = 0; i < 6; ++i)
+            for (int j = 0; j < 6; ++j) {
+                double u = std::fabs(a + off[i]), v = std::fabs(a + off[j]);   // off = -a : le centre (u = 0)
+                t.psi_vector(u, v, d, &vec[0]);
+                double ex = (normal_cdf((a - u) / s) - normal_cdf((-a - u) / s))
+                          * (normal_cdf((a - v) / s) - normal_cdf((-a - v) / s));
+                double e = std::fabs(vec[nt - 1] - ex);
+                if (e > worst) worst = e;
+            }
+    }
+    // somme des plateaux sur le pavage de tuiles de cote p : doit valoir 1
+    double sworst = 0.0;
+    const int L = (int)std::floor(t.u_max() / p) + 1;
+    const double dsum[3] = { 0.1, 1.0, tp.d_max };
+    const double xs[3][2] = { { 0.0, 0.0 }, { 1.0, 1.0 }, { 0.3, 0.7 } };
+    for (int id = 0; id < 3; ++id)
+        for (int ip = 0; ip < 3; ++ip) {
+            double x = xs[ip][0] * a, y = xs[ip][1] * a, sum = 0.0;
+            for (int i = -L; i <= L; ++i)
+                for (int j = -L; j <= L; ++j) {
+                    t.psi_vector(x - i * p, y - j * p, dsum[id], &vec[0]);
+                    sum += vec[nt - 1];
+                }
+            if (std::fabs(sum - 1.0) > sworst) sworst = std::fabs(sum - 1.0);
+        }
+    if (sum_err) *sum_err = sworst;
+    return worst;
+}
+
+// Perte due a la coupure de portee : un voxel n'alimente que les pads dont le centre est a moins de
+// reach (en u et en v). Le premier pad ignore est centre juste au-dela de la fenetre ; son signal par bin de
+// lecture, en fraction de la charge du voxel, est au plus dpsi_max(reach, v, d) (majorant donne par la table,
+// le meme que celui de la selection par seuil). On prend le pire cas sur d et sur le bord de la fenetre.
+inline double reach_loss(const PsiTable& t, double d_max, double reach_cm, double* d_worst = 0) {
+    double worst = 0.0;
+    if (d_worst) *d_worst = 0.0;
+    for (int i = 0; i <= 100; ++i) {
+        const double d  = d_max * i / 100.0;
+        const int    kd = t.d_cell(d);
+        for (int j = 0; j <= 10; ++j) {
+            const double v = reach_cm * j / 10.0;
+            const double w = t.dpsi_max(reach_cm, v, kd);
+            if (w > worst) { worst = w; if (d_worst) *d_worst = d; }
+        }
+    }
+    return worst;
+}
+
 // Controles faits apres construction de la table
-inline void check_table(const PsiTable& t, const DerivedParams& D, CheckList& chk) {
+inline void check_table(const PsiTable& t, const DerivedParams& D, CheckList& chk, double acc_tol = 0.0,
+                        double reach_tol = 0.0) {
     if (t.n_tau() != D.n_tau || t.n_out() != D.tp.n_out)
         throw std::logic_error("derive_params et PsiTable ne sont pas d'accord (n_tau ou n_out) : bug");
 
@@ -442,5 +570,53 @@ inline void check_table(const PsiTable& t, const DerivedParams& D, CheckList& ch
         s << "phi vaut " << t.phi_edge_max() << " (> 1e-6) au bord de la source r_src = " << D.tp.r_src
           << " cm : source tronquee trop tot. Augmenter table_n_img." ;
         chk.fail("phi_edge", s.str());
+    }
+
+    if (acc_tol > 0.0) {
+        double sum_err = 0.0;
+        const double e = table_accuracy_error(t, D, &sum_err);
+        std::cout << "controle de la table : charge finale par pad, ecart max a la formule exacte = " << e
+                  << " ;  somme des pads - 1 = " << sum_err << "   (tolerance " << acc_tol << ")\n";
+        if (e > acc_tol || sum_err > acc_tol) {
+            std::ostringstream s;
+            s << "la table n'est pas assez precise : ecart max sur la charge par pad = " << e
+              << ", sur la somme des pads = " << sum_err << " (tolerance " << acc_tol
+              << "). Augmenter table_kappa (ex. 4 ; grille uniforme : diminuer table_step_out), "
+              << "table_n_d ou table_m_cells, ou relever la tolerance (table_acc_tol).";
+            chk.fail("table_accuracy", s.str());
+        }
+    }
+
+    if (reach_tol > 0.0) {
+        double dw = 0.0;
+        const double loss = reach_loss(t, D.tp.d_max, D.reach_cm, &dw);
+        std::cout << "controle de la portee : signal maximal d'un pad ignore (centre a " << D.reach_cm << " cm = "
+                  << D.reach_cm / D.pitch << " pitchs) = " << loss << " de la charge d'un voxel par bin, a d = " << dw
+                  << " cm   (tolerance " << reach_tol << ")\n";
+        if (loss > reach_tol) {
+            // extrapolation exponentielle a partir de deux portees, pour suggerer une valeur
+            const double dr = 0.5 * D.pitch;
+            const double l2 = reach_loss(t, D.tp.d_max, D.reach_cm - dr);
+            double need_pitch = D.reach_cm / D.pitch + 1.0;
+            if (l2 > loss && loss > 0.0) {
+                const double lambda = std::log(l2 / loss) / dr;
+                need_pitch = (D.reach_cm + std::log(loss / reach_tol) / lambda) / D.pitch;
+                need_pitch = std::ceil(2.0 * need_pitch) / 2.0;
+            }
+            std::ostringstream s;
+            s << "la portee d'induction " << D.reach_cm << " cm (" << D.reach_cm / D.pitch << " pitchs) coupe un signal de "
+              << loss << " de la charge d'un voxel par bin (tolerance reach_tol = " << reach_tol
+              << "). Augmenter reach_pitch (essayer " << need_pitch << "), ou relever reach_tol.";
+            chk.fail("reach_loss", s.str());
+        } else {
+            // information : plus petite portee (par pas de 0,25 pitch) qui respecte encore la tolerance
+            double rmin = D.reach_cm;
+            for (double r = D.reach_cm - 0.25 * D.pitch; r > 0.5 * D.pitch; r -= 0.25 * D.pitch) {
+                if (reach_loss(t, D.tp.d_max, r) > reach_tol) break;
+                rmin = r;
+            }
+            std::cout << "                      portee minimale qui respecte encore la tolerance : " << rmin / D.pitch
+                      << " pitchs (par pas de 0.25)\n";
+        }
     }
 }

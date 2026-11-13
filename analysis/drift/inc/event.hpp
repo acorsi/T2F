@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------------------
 
 struct FragmentInput {
-    std::vector<double> raw_trace;  // dE par voxel (keV), taille = N_voxels
+    std::vector<double> raw_trace;  // dE par voxel (MeV), taille = N_voxels
     int32_t Z, A;
     double  KE;
 };
