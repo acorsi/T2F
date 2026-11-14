@@ -396,7 +396,9 @@ inline int resolve_table_R(const DetectorConfig& cfg, const PadPlaneParams& pp,
     if (automatique && opt.tau_Rref < 8)
         throw std::runtime_error("table_tau_Rref doit etre >= 8 pour le choix automatique de R");
     std::vector<int> cand;
-    if (automatique) { for (int r = 1; r <= 6; ++r) cand.push_back(r); }
+    const int Rmax = std::max(6, (int)std::ceil(0.6 * cfg.delta_t));   // dtau >= ~1.67 ns, au moins 6
+    if (automatique) { for (int r = 1; r <= Rmax; ++r) cand.push_back(r); }
+    //    if (automatique) { for (int r = 1; r <= 6; ++r) cand.push_back(r); }
     else             { cand.push_back(opt.R); }
     const int Rref = (cand.back() < opt.tau_Rref) ? opt.tau_Rref : 2 * cand.back();
     const int Rh   = Rref / 2;
@@ -411,7 +413,7 @@ inline int resolve_table_R(const DetectorConfig& cfg, const PadPlaneParams& pp,
           << opt.max_table_mb << ") : resolution en tau non verifiable. Augmenter max_table_mb, diminuer "
           << "table_tau_Rref, ou imposer table_R avec table_tau_tol = 0.";
         chk.fail("tau_resolution", s.str());
-        return automatique ? 6 : opt.R;
+        return automatique ? cand.back() : opt.R;
     }
     std::cout << "Controle de la resolution en tau (tolerance " << 100.0 * opt.tau_tol << " %, voxels a d >= "
               << opt.tau_dmin << " cm, reference R = " << Rref << ") :\n";
@@ -444,8 +446,8 @@ inline int resolve_table_R(const DetectorConfig& cfg, const PadPlaneParams& pp,
     }
     std::ostringstream s;
     if (automatique) {
-        s << "aucun R <= 6 n'atteint la tolerance " << 100.0 * opt.tau_tol << " % (R = 6 : ecart " << 100.0 * err
-          << " %). R = 6 est retenu. Augmenter table_tau_tol, ou imposer table_R = 7 ou plus avec "
+      s << "aucun R <= " << cand.back() << " n'atteint la tolerance " << 100.0 * opt.tau_tol << " % (R = " << cand.back() << " : ecart " << 100.0 * err
+	<< " %). R = " << cand.back() << " est retenu. Augmenter table_tau_tol, ou imposer table_R plus grand avec "
           << "table_tau_tol = 0 (et table_tau_Rref plus grand). (Cause probable : diffusion longitudinale "
           << "faible devant delta_t.)";
     } else {
@@ -454,7 +456,7 @@ inline int resolve_table_R(const DetectorConfig& cfg, const PadPlaneParams& pp,
           << "table_tau_tol.";
     }
     chk.fail("tau_resolution", s.str());
-    return automatique ? 6 : opt.R;
+    return automatique ? cand.back() : opt.R;
 }
 
 inline std::string grid_description(const TableParams& tp) {
