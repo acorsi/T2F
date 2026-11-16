@@ -1,0 +1,22 @@
+# Complete le .gitignore de T2F/ (les motifs sont relatifs a ce dossier)
+
+# --- Sauvegardes locales (fichiers et dossiers) ---
+*.bak_avant_*
+
+# --- Fichier ecrit par le programme dans le dossier de lancement ---
+build/my_pad.txt
+
+# --- Sorties de runs : journaux, comparaisons, listes de pads ---
+drift_output/*.log
+drift_output/cmp_*.txt
+drift_output/*.pads.txt
+
+# --- Figures produites par les scripts d'analyse ---
+analysis/*.png
+
+# --- Tests : executables (fichiers sans extension) et dossiers de resultats ---
+tests/test_*
+!tests/test_*.*
+tests/out/
+tests/out_h5/
+tests/results/
