@@ -9,6 +9,7 @@
 #include "noise.hpp"
 #include "cap_noise.hpp"
 #include "preamp_response.hpp"
+#include "enc_model.hpp"
 #include "readout.hpp"
 
 // genere a chaque build par cmake/git_version.cmake (T2F_GIT_VERSION, T2F_GIT_BRANCH)
@@ -21,7 +22,9 @@
 #endif
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <unistd.h>
 #include <iostream>
 #include <fstream>
 #include <numeric>
@@ -73,6 +76,18 @@ static void timed_vlen(H5Writer& w, const std::string& name,
 // ---------------------------------------------------------------------------
 // Paramètres d'exécution (hors detecteur et pads), lus dans le fichier d'input
 // ---------------------------------------------------------------------------
+// --- Presentation des sorties : titres de blocs en couleur (seulement si la sortie est un terminal) ---
+static bool g_color = false;
+static const char* coul(const char* code) { return g_color ? code : ""; }
+static const char* C_TITRE = "\033[1;36m";    // cyan gras : titre de bloc
+static const char* C_OK    = "\033[1;32m";    // vert gras
+static const char* C_ALERTE = "\033[1;31m";   // rouge gras : attention
+static const char* C_FIN   = "\033[0m";
+// saute une ligne puis ecrit le titre du bloc
+static void titre(const char* t) {
+    std::cout << "\n" << coul(C_TITRE) << t << coul(C_FIN) << "\n";
+}
+
 struct RunParams {
     std::string in_path;
     std::string out_path;
@@ -85,8 +100,9 @@ struct RunParams {
 
     // --- bruit electronique et lecture (voir noise.hpp, readout.hpp) ---
     int         noise_enable;       // 0 : meme chaine sans bruit ni seuil de lecture ; 1 : avec bruit
-    std::string preamp_response;    // "test_gauss" (seule reponse disponible pour l'instant)
-    double      preamp_gauss_fwhm;  // ns
+    std::string preamp_response;    // "test_gauss" ou "minos"
+    double      preamp_gauss_fwhm;  // ns (test_gauss)
+    double      preamp_minos_peak_ns; // ns : temps du maximum de la reponse (minos)
     double      enc_total;          // e- rms (modele uniform seulement)
     double      f_par, f_ser, f_can;
     // modele "capacitance" (voir cap_noise.hpp)
@@ -106,6 +122,7 @@ struct RunParams {
     int         ghost_enable;       // 0 : pas de fantomes ; sans effet si noise_enable = 0
     double      ghost_prob;         // < 0 : p calibree au lancement ; >= 0 : valeur imposee
     double      ghost_window_ns;
+    bool        ghost_window_given; // false : valeur automatique avec la reponse minos
     int         ghost_calib_trials;
 };
 
@@ -138,6 +155,7 @@ static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPla
     R.noise_enable      = c.get_int   ("noise_enable",      0);
     R.preamp_response   = c.get_string("preamp_response",   "test_gauss");
     R.preamp_gauss_fwhm = c.get_double("preamp_gauss_fwhm", 190.0);
+    R.preamp_minos_peak_ns = c.get_double("preamp_minos_peak_ns", 0.0);   // lue toujours (check_unused) ; obligatoire si minos
     R.enc_total         = c.get_double("enc_total",         2000.0);
     R.f_par             = c.get_double("f_par",             0.475);
     R.f_ser             = c.get_double("f_ser",             0.475);
@@ -157,6 +175,7 @@ static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPla
     R.ghost_enable       = c.get_int   ("ghost_enable",       1);
     R.ghost_prob         = c.get_double("ghost_prob",         -1.0);
     R.ghost_window_ns    = c.get_double("ghost_window_ns",    940.0);
+    R.ghost_window_given = c.has("ghost_window_ns");
     R.ghost_calib_trials = c.get_int   ("ghost_calib_trials", 20000);
 
     // --- detecteur ---
@@ -228,8 +247,36 @@ static void read_config(ConfigFile& c, RunParams& R, DetectorConfig& cfg, PadPla
     if (pp.pad_size <= 0.0 || pp.inter_pad < 0.0) throw std::runtime_error("pad_size > 0 et inter_pad >= 0 requis");
     if (seuil_qt < 0.0)                          throw std::runtime_error("seuil_qt doit etre >= 0");
     if (R.noise_enable != 0 && R.noise_enable != 1) throw std::runtime_error("noise_enable doit etre 0 ou 1");
-    if (R.preamp_response != "test_gauss")       throw std::runtime_error("preamp_response : seule la valeur test_gauss est disponible pour l'instant");
+    if (!c.has("preamp_response"))
+                                                 throw std::runtime_error("preamp_response absente : choisir test_gauss (bloc A) ou minos (bloc B) dans le fichier .cfg");
+    if (R.preamp_response != "test_gauss" && R.preamp_response != "minos")
+                                                 throw std::runtime_error("preamp_response doit valoir test_gauss ou minos");
+    if (R.preamp_response == "test_gauss" && !c.has("preamp_gauss_fwhm"))
+                                                 throw std::runtime_error("preamp_response = test_gauss : la cle preamp_gauss_fwhm (ns) est obligatoire");
     if (R.preamp_gauss_fwhm <= 0.0)              throw std::runtime_error("preamp_gauss_fwhm doit etre > 0");
+    if (R.preamp_response == "minos") {
+        if (!c.has("preamp_minos_peak_ns"))
+            throw std::runtime_error("preamp_response = minos : la cle preamp_minos_peak_ns (ns) est obligatoire");
+        if (R.preamp_minos_peak_ns < MinosResponse::peak_min_ns() || R.preamp_minos_peak_ns > MinosResponse::peak_max_ns()) {
+            std::ostringstream m;
+            m << "preamp_minos_peak_ns = " << R.preamp_minos_peak_ns << " ns hors de la plage autorisee ["
+              << MinosResponse::peak_min_ns() << " ; " << MinosResponse::peak_max_ns() << "] ns";
+            throw std::runtime_error(m.str());
+        }
+        // avec minos et noise_model = capacitance, l'ENC vient du temps de pic (enc_model.hpp)
+        if (R.noise_model == "capacitance") {
+            const char* interdites[] = {"enc0", "enc_ref", "f_par", "f_ser", "f_can"};
+            for (int i = 0; i < 5; ++i) {
+                if (c.has(interdites[i])) {
+                    std::ostringstream m;
+                    m << "la cle " << interdites[i] << " est incompatible avec preamp_response = minos et noise_model = capacitance : "
+                      << "l'ENC est calcule a partir de preamp_minos_peak_ns (modele ENC(tp, C)). "
+                      << "Supprimer ou commenter enc0, enc_ref, f_par, f_ser et f_can (bloc A du fichier .cfg)";
+                    throw std::runtime_error(m.str());
+                }
+            }
+        }
+    }
     if (R.enc_total < 0.0)                       throw std::runtime_error("enc_total doit etre >= 0");
     if (R.f_par < 0.0 || R.f_ser < 0.0 || R.f_can < 0.0)
                                                  throw std::runtime_error("f_par, f_ser, f_can doivent etre >= 0");
@@ -267,6 +314,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "Usage : " << argv[0] << " fichier.cfg [cle=valeur ...]\n";
         return 1;
     }
+    g_color = (isatty(fileno(stdout)) != 0);
 
     //Mesure du temps cpu
     double wall0 = omp_get_wtime();
@@ -293,9 +341,10 @@ int main(int argc, char* argv[]) {
     const int         nthreads  = R.n_threads;
     const int         frag_mask = R.frag_mask;
 
-    std::cout << "Fichier d'input   = " << argv[1] << "\n";
-    std::cout << "input_file        = " << in_path  << "\n";
-    std::cout << "output_file       = " << out_path << "\n";
+    titre("Fichiers");
+    std::cout << "  fichier .cfg      = " << argv[1] << "\n";
+    std::cout << "  input_file        = " << in_path  << "\n";
+    std::cout << "  output_file       = " << out_path << "\n";
 
     // --- Lecture metadata ---
     H5Reader reader(in_path);
@@ -308,17 +357,19 @@ int main(int argc, char* argv[]) {
     const int    n_merge          = std::max(1, (int)(step_size_target / step_size_in));
     const double step_size_eff    = n_merge * step_size_in;
 
-    std::cout << "step_size_in      = " << step_size_in  * 10 << " mm\n";
-    std::cout << "step_size_target  = " << step_size_target * 10 << " mm\n";
-    std::cout << "n_merge           = " << n_merge             << "\n";
-    std::cout << "step_size_eff     = " << step_size_eff * 10  << " mm\n";
-    std::cout << "Events à traiter  = " << N                   << "\n";
+    titre("Traces d'entree");
+    std::cout << "  step_size_in      = " << step_size_in  * 10 << " mm\n";
+    std::cout << "  step_size_target  = " << step_size_target * 10 << " mm\n";
+    std::cout << "  n_merge           = " << n_merge             << "\n";
+    std::cout << "  step_size_eff     = " << step_size_eff * 10  << " mm\n";
+    std::cout << "  evenements a traiter = " << N                << "\n";
 
     cfg.step_size = step_size_eff;
-    std::cout << "seuil_qt          = " << cfg.seuil_qt_pos << " e-  (polarite positive seulement)\n";
-    std::cout << "eps_qt            = " << cfg.eps_qt << " e-\n";
-    std::cout << "frag_mask         = " << frag_mask << "\n";
-    std::cout << "\n\033[1;32m" << nthreads << " running threads...\033[0m\n\n";
+    titre("Preselection des pads");
+    std::cout << "  seuil_qt          = " << cfg.seuil_qt_pos << " e-  (polarite positive seulement)\n";
+    std::cout << "  eps_qt            = " << cfg.eps_qt << " e-\n";
+    std::cout << "  frag_mask         = " << frag_mask << "\n";
+    std::cout << "\n" << coul(C_OK) << nthreads << " running threads..." << coul(C_FIN) << "\n";
 
     const std::vector<double> empty_vec;      // trace vide, en lecture seule (thread-safe)
 
@@ -338,9 +389,14 @@ int main(int argc, char* argv[]) {
     cfg.tau_tail_ns = D.tau_tail_ns;   // n_bins() en depend : a fixer avant les Processor et les tampons
 
     // --- Reponse du preampli, modele de bruit, lecture (voir noise.hpp, readout.hpp) ---
-    // La reponse reelle (MINOS) sera une autre classe derivee de PreampResponse, a brancher ici.
+    // Reponse choisie par la cle preamp_response (test_gauss ou minos).
     GaussTestResponse gauss_resp(R.preamp_gauss_fwhm);
     const PreampResponse* response = &gauss_resp;
+    MinosResponse* minos_ptr = 0;
+    if (R.preamp_response == "minos") {
+        minos_ptr = new MinosResponse(R.preamp_minos_peak_ns);
+        response  = minos_ptr;
+    }
     const uint64_t noise_seed = (uint64_t)(unsigned int)R.noise_seed;
 
     NoiseModel* noise_ptr   = 0;
@@ -356,10 +412,21 @@ int main(int argc, char* argv[]) {
         if (R.noise_model == "capacitance") {
             // le NoiseModel est celui de la capacite de reference ; le seuil de lecture (global) est
             // read_thr_sigma * enc_ref ; chaque pad a ensuite son bruit serie (set_pad_noise)
-            CapNoiseParams cp;
-            cp.enc0 = R.enc0; cp.enc_ref = R.enc_ref; cp.c_ref_pf = R.c_ref_pf;
-            cp.f_par = R.f_par; cp.f_ser = R.f_ser; cp.f_can = R.f_can;
-            cap_ptr = new CapNoiseModel(cp);
+            if (minos_ptr) {
+                // ENC(tp, C) : composantes calculees par le modele (enc_model.hpp) ; R recoit les valeurs
+                // equivalentes (messages et metadonnees coherents)
+                const EncComponents ec = EncTpModel::components(R.preamp_minos_peak_ns);
+                cap_ptr = new CapNoiseModel(ec.par2, ec.ser02, ec.can2, ec.b, R.c_ref_pf);
+                const double e0sq = cap_ptr->params().enc0 * cap_ptr->params().enc0;
+                R.enc0    = cap_ptr->params().enc0;
+                R.enc_ref = cap_ptr->params().enc_ref;
+                R.f_par = ec.par2 / e0sq; R.f_ser = ec.ser02 / e0sq; R.f_can = ec.can2 / e0sq;
+            } else {
+                CapNoiseParams cp;
+                cp.enc0 = R.enc0; cp.enc_ref = R.enc_ref; cp.c_ref_pf = R.c_ref_pf;
+                cp.f_par = R.f_par; cp.f_ser = R.f_ser; cp.f_can = R.f_can;
+                cap_ptr = new CapNoiseModel(cp);
+            }
             cap_ptr->fill_noise_params(nparams);
         }
         nparams.dt = cfg.delta_t;
@@ -380,28 +447,48 @@ int main(int argc, char* argv[]) {
     const NoiseModel& noise   = *noise_ptr;
     const Readout&    readout = *readout_ptr;
 
-    std::cout << "reponse du preampli : " << response->name() << " (" << response->describe() << ")\n";
+    // fenetre ecrite d'un fantome : avec minos, automatique si ghost_window_ns n'est pas dans le .cfg
+    // = queue de h + 2 marges + duree typique du signal (100 ns) ; sinon la valeur du .cfg (defaut 940 ns)
+    bool ghost_window_auto = false;
+    if (minos_ptr && !R.ghost_window_given) {
+        const double signal_typique_ns = 100.0;
+        R.ghost_window_ns = (noise.n_taps() - 1) * cfg.delta_t + 2.0 * R.window_margin_ns + signal_typique_ns;
+        ghost_window_auto = true;
+    }
+
+    titre("Reponse du preampli");
+    std::cout << "  " << response->name() << " : " << response->describe() << "\n";
+
+    titre("Bruit electronique");
     if (R.noise_enable == 1) {
-        std::cout << noise.summary() << "\n";
-        std::cout << "seuil de lecture  = " << readout.threshold() << " e- (" << R.read_thr_sigma
-                  << " x " << noise.params().enc_total << (cap_ptr ? " = enc_ref" : " = enc_total")
-                  << "), global, " << R.read_n_consec << " echantillon(s) consecutif(s)\n";
+        std::cout << "  " << noise.summary() << "\n";
         if (cap_ptr) {
-            std::cout << "modele capacitance : ENC(C)^2 = enc0^2 + (b C)^2 avec enc0 = " << R.enc0 << " e-, b = "
+            std::cout << "  modele capacitance : ENC(C)^2 = enc0^2 + (b C)^2 avec enc0 = " << R.enc0 << " e-, b = "
                       << cap_ptr->slope() << " e-/pF (enc_ref = " << R.enc_ref << " e- a c_ref = " << R.c_ref_pf
                       << " pF) ; enc_total n'est pas utilise\n";
+            if (minos_ptr)
+                std::cout << "  ENC(tp, C) (minos) : enc0, enc_ref et f_par/f_ser/f_can calcules pour tp = " << R.preamp_minos_peak_ns
+                          << " ns\n    " << EncTpModel::describe() << "\n";
         } else if (R.noise_model == "uniform") {
-            std::cout << "modele de bruit   : uniform (meme ENC pour tous les pads)\n";
+            std::cout << "  modele de bruit   : uniform (meme ENC pour tous les pads)\n";
         }
     } else {
-        std::cout << "bruit desactive : meme chaine (reponse, CAN de " << R.adc_period_ns
+        std::cout << "  desactive : meme chaine (reponse, CAN de " << R.adc_period_ns
                   << " ns), sans bruit ni seuil de lecture\n";
     }
-    std::cout << "fenetre ecrite    = signal vrai + queue complete de h (" << readout.tail_bins() << " bins) + marge ("
+
+    titre("Lecture");
+    if (R.noise_enable == 1) {
+        std::cout << "  seuil de lecture  = " << readout.threshold() << " e- (" << R.read_thr_sigma
+                  << " x " << noise.params().enc_total << (cap_ptr ? " = enc_ref" : " = enc_total")
+                  << "), global, " << R.read_n_consec << " echantillon(s) consecutif(s)\n";
+    }
+    std::cout << "  fenetre ecrite    = signal vrai + queue complete de h (" << readout.tail_bins() << " bins) + marge ("
               << readout.margin_bins() << " bins) de chaque cote ; grille de lecture " << readout.grid_bins()
               << " bins (physique " << readout.n_bins() << ")\n";
 
     // --- Plan de pads ---
+    titre("Plan de pads");
     PadPlane plane(pParam, cfg, D.tp, D.reach_cm);   // construit aussi la table d'induction
 
     // --- Bruit par pad (modele capacitance) : capacite totale et ENC de chaque pad ---
@@ -432,13 +519,14 @@ int main(int argc, char* argv[]) {
             if (pad_enc[ip] < emin)  emin = pad_enc[ip];
             if (pad_enc[ip] > emax)  emax = pad_enc[ip];
         }
-        std::cout << "capacite par pad  : ";
+        titre("Capacites des pads");
+        std::cout << "  capacite          : ";
         if (R.pad_capacitance_file.empty())
             std::cout << "valeur unique " << cmin << " pF = c_cable_pf (" << R.c_cable_pf << ") + c_routing_pf ("
-                      << R.c_routing_pf << ", valeur par defaut PROVISOIRE)";
+                      << R.c_routing_pf << ", valeur par defaut PROVISOIRE)\n";
         else
-            std::cout << "lue dans " << R.pad_capacitance_file << " : de " << cmin << " a " << cmax << " pF";
-        std::cout << " -> ENC des pads de " << emin << " a " << emax << " e-\n";
+            std::cout << "lue dans " << R.pad_capacitance_file << " : de " << cmin << " a " << cmax << " pF\n";
+        std::cout << "  ENC des pads      : de " << emin << " a " << emax << " e-\n";
     }
 
     // --- Pads fantomes (avec bruit seulement) : p calibree ici, liste de tous les pads du detecteur ---
@@ -465,12 +553,16 @@ int main(int argc, char* argv[]) {
             std::cerr << "\nArret (pads fantomes) : " << e.what() << "\n";
             return 1;
         }
-        std::cout << "pads fantomes     : p = " << ghost_ptr->prob() << " par pad sans signal";
-        if (R.ghost_prob < 0.0) std::cout << " (calibree, +- " << ghost_ptr->prob_err() << ")";
-        else                    std::cout << " (imposee)";
-        std::cout << ", soit au plus ~" << ghost_ptr->prob() * (double)plane.pads().size()
-                  << " fantomes par evenement (p x " << plane.pads().size() << " pads, moins les pads du signal) ; fenetre ecrite = "
-                  << ghost_ptr->window_samples() << " echantillons\n";
+        titre("Pads fantomes");
+        std::cout << "  probabilite p     = " << ghost_ptr->prob() << " par pad sans signal";
+        if (R.ghost_prob < 0.0) std::cout << " (calibree, +- " << ghost_ptr->prob_err() << ")\n";
+        else                    std::cout << " (imposee)\n";
+        std::cout << "  fantomes attendus : au plus ~" << ghost_ptr->prob() * (double)plane.pads().size()
+                  << " par evenement (p x " << plane.pads().size() << " pads, moins les pads du signal)\n";
+        std::cout << "  fenetre ecrite    = " << ghost_ptr->window_samples() << " echantillons";
+        if (ghost_window_auto)
+            std::cout << " (" << R.ghost_window_ns << " ns, automatique : queue de h + 2 marges + 100 ns)";
+        std::cout << "\n";
         if (cap_ptr) {
             // p du pad de reference ci-dessus ; p de chaque pad selon son ENC (seuil global)
             double ps = 0.0, pmin = 1.0, pmax = 0.0;
@@ -479,11 +571,12 @@ int main(int argc, char* argv[]) {
                 ps += pp; if (pp < pmin) pmin = pp; if (pp > pmax) pmax = pp;
             }
             ghost_p_mean = ps / (double)pad_enc_scale.size(); ghost_p_min = pmin; ghost_p_max = pmax;
-            std::cout << "                    p par pad selon son ENC : moyenne " << ghost_p_mean << ", de " << pmin << " a " << pmax
+            std::cout << "  p par pad (ENC)   : moyenne " << ghost_p_mean << ", de " << pmin << " a " << pmax
                       << " (p de reference = pad a c_ref_pf ; calibree pour chaque ENC distinct)\n";
         }
     } else if (R.noise_enable == 1) {
-        std::cout << "pads fantomes     : desactives (ghost_enable = 0)\n";
+        titre("Pads fantomes");
+        std::cout << "  desactives (ghost_enable = 0)\n";
     }
 
     try {
@@ -500,9 +593,10 @@ int main(int argc, char* argv[]) {
         pad_file << p.id << " " << p.x << " " << p.y
                  << " " << p.r_in << " " << p.r_out << " " << p.sx << " " << p.sy << "\n";
     pad_file.close();
-    std::cout << "Géométrie pads écrite dans my_pad.txt ("
-              << plane.pads().size() << " pads)\n";
-
+    titre("Sortie");
+    std::cout << "  geometrie des pads ecrite dans my_pad.txt ("
+              << plane.pads().size() << " pads)\n\n";
+    
     // --- Préparation fichier de sortie ---
     H5Writer writer(out_path, N);
 
@@ -575,6 +669,10 @@ int main(int argc, char* argv[]) {
     writer.write_attribute<int>   ("/metadata", "noise_enable",     R.noise_enable);
     writer.write_attribute_string ("/metadata", "preamp_response",  response->name());
     writer.write_attribute_string ("/metadata", "preamp_response_info", response->describe());
+    if (minos_ptr) {
+        writer.write_attribute<double>("/metadata", "response_tau_ns",  minos_ptr->tau());
+        writer.write_attribute<double>("/metadata", "response_peak_ns", minos_ptr->peak_ns());
+    }
     writer.write_attribute<double>("/metadata", "enc_total",        noise.params().enc_total);
     writer.write_attribute_string ("/metadata", "noise_model",      R.noise_model);
     if (cap_ptr) {
@@ -585,6 +683,10 @@ int main(int argc, char* argv[]) {
         writer.write_attribute<double>("/metadata", "c_routing_pf",     R.c_routing_pf);
         writer.write_attribute<double>("/metadata", "enc_slope_per_pf", cap_ptr->slope());
         writer.write_attribute_string ("/metadata", "pad_capacitance_file", R.pad_capacitance_file);
+        if (minos_ptr) {
+            writer.write_attribute_string("/metadata", "enc_tp_model", EncTpModel::describe());
+            writer.write_attribute<int>("/metadata", "ghost_window_auto", ghost_window_auto ? 1 : 0);
+        }
         writer.write_attribute_string ("/metadata", "noise_model_description",
             "ENC(C)^2 = enc0^2 + (b C)^2, b = enc_slope_per_pf ; seul le bruit serie depend de C ; enc_total, enc_par, enc_ser, enc_can, "
             "sigma_par, sigma_ser, ghost_p et read_thr_e sont ceux du pad de capacite de reference c_ref_pf ; capacite et ENC de chaque pad : "
@@ -825,9 +927,9 @@ int main(int argc, char* argv[]) {
         n_cathode_total += n_cathode;
         n_grid_total    += n_grid;
         if (n_cathode > 0 || n_grid > 0) {
-            std::cout << "\033[1;31mATTENTION (evenements " << start << " a " << start + count - 1 << ") : "
+            std::cout << coul(C_ALERTE) << "ATTENTION (evenements " << start << " a " << start + count - 1 << ") : "
                       << n_cathode << " trace(s) depassent la cathode (z < 0 ; voxels conserves, d limite a dkg dans la table), "
-                      << n_grid << " trace(s) coupee(s) a la grille (z >= dkg ; voxels suivants ignores)\033[0m\n";
+                      << n_grid << " trace(s) coupee(s) a la grille (z >= dkg ; voxels suivants ignores)" << coul(C_FIN) << "\n";
         }
 
 	writer.write_chunk<float>("/H/KE", H_KEf, start);
@@ -921,7 +1023,7 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-    std::cout << "voxels avec charge au-delà de r_active (frac > 1e-6) : "
+    std::cout << "\n voxels avec charge au-delà de r_active (frac > 1e-6) : "
               << pad_beyond_active_count() << "\n";
 
     std::cout << "traces traitées : " << pad_traces_count()
@@ -929,9 +1031,9 @@ int main(int argc, char* argv[]) {
               << pad_traces_beyond_count() << "\n";
 
     if (n_cathode_total > 0 || n_grid_total > 0) {
-        std::cout << "\033[1;31mATTENTION : " << n_cathode_total << " trace(s) ont depasse la cathode et "
+        std::cout << coul(C_ALERTE) << "ATTENTION : " << n_cathode_total << " trace(s) ont depasse la cathode et "
                   << n_grid_total << " ont ete coupees a la grille sur l'ensemble du run. "
-                  << "Verifier dkg et la position du vertex.\033[0m\n";
+                  << "Verifier dkg et la position du vertex." << coul(C_FIN) << "\n";
     }
 
     std::cout << "\nTemps réel total : " << omp_get_wtime() - wall0 << " s\n";

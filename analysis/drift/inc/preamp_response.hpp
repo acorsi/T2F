@@ -80,3 +80,84 @@ private:
     double m_fwhm;
     double sigma() const { return m_fwhm / 2.3548200450309493; }
 };
+
+// ---------------------------------------------------------------------------
+// Reponse MINOS (equation 6 du document de reference) :
+//   h(t) ~ (t/tau)^3 * exp(-3 t/tau) * sin(t/tau),   t >= 0
+// normalisee a 1 au maximum.
+//
+// Le parametre est le TEMPS DU MAXIMUM de h (peaking time, "preamp_minos_peak_ns") ; tau en
+// decoule : le maximum est a u = t/tau = 1.1664..., donc tau = peak / 1.1664...
+// Proprietes utiles (peak = 1 au maximum) : integrale = 1.306 tau, largeur a mi-hauteur =
+// 1.264 tau, sous-oscillation negative maximale = -0.957 %.
+//
+// Troncature : la queue est coupee des que l'enveloppe u^3 exp(-3u) / (valeur au maximum)
+// passe sous TAIL_CUT = 1e-4 (donc |h| < 1e-4 sur le dernier echantillon ; NoiseModel
+// exige moins de 1e-3).
+//
+// Normalisation : comme pour GaussTestResponse, a 1 exactement au maximum de
+// l'ECHANTILLONNAGE (si le pic tombe entre deux echantillons, l'ecart avec le vrai maximum
+// est de l'ordre de (dt/tau)^2).
+// ---------------------------------------------------------------------------
+class MinosResponse : public PreampResponse {
+public:
+    // plage de peaking time autorisee (reglages mesures de l'electronique : 76 a 919 ns)
+    static double peak_min_ns() { return 76.0; }
+    static double peak_max_ns() { return 919.0; }
+    static double tail_cut()    { return 1.0e-4; }
+
+    explicit MinosResponse(double peak_ns) : m_peak(peak_ns) {
+        if (!(peak_ns > 0.0)) throw std::runtime_error("MinosResponse : le temps de pic doit etre > 0");
+        m_tau = peak_ns / u_peak();
+    }
+
+    std::string name() const { return "minos"; }
+
+    std::string describe() const {
+        std::ostringstream s;
+        s << "reponse MINOS (t/tau)^3 exp(-3t/tau) sin(t/tau), temps du maximum = " << m_peak
+          << " ns, tau = " << m_tau << " ns, queue coupee a " << tail_cut();
+        return s.str();
+    }
+
+    double tau() const     { return m_tau; }
+    double peak_ns() const { return m_peak; }
+
+    // position du maximum en unites de tau : solution de 3/u - 3 + cos(u)/sin(u) = 0 (1.1664...)
+    static double u_peak() {
+        double a = 0.5, b = 1.5;                 // la fonction change de signe sur [0.5 ; 1.5]
+        for (int i = 0; i < 200; ++i) {
+            const double m = 0.5 * (a + b);
+            const double f = 3.0 / m - 3.0 + std::cos(m) / std::sin(m);
+            if (f > 0.0) a = m; else b = m;
+        }
+        return 0.5 * (a + b);
+    }
+
+    void sample(double dt, std::vector<double>& h) const {
+        if (dt <= 0.0) throw std::runtime_error("MinosResponse::sample : dt doit etre > 0");
+        const double up   = u_peak();
+        const double hpk  = form(up);
+        // u de coupure : premier u > up ou l'enveloppe passe sous tail_cut (decroissante pour u > 1)
+        double a = up, b = 30.0;
+        for (int i = 0; i < 200; ++i) {
+            const double m = 0.5 * (a + b);
+            if (envelope(m) / hpk > tail_cut()) a = m; else b = m;
+        }
+        const double tmax = b * m_tau;
+        const int n = (int)std::ceil(tmax / dt) + 1;
+        h.assign(n, 0.0);
+        for (int k = 0; k < n; ++k) h[k] = form(k * dt / m_tau);
+        // normalisation exacte a 1 au maximum de l'echantillonnage
+        double m = 0.0;
+        for (int k = 0; k < n; ++k) if (h[k] > m) m = h[k];
+        for (int k = 0; k < n; ++k) h[k] /= m;
+    }
+
+private:
+    double m_peak;     // ns : temps du maximum
+    double m_tau;      // ns
+
+    static double envelope(double u) { return u * u * u * std::exp(-3.0 * u); }
+    static double form(double u)     { return envelope(u) * std::sin(u); }
+};

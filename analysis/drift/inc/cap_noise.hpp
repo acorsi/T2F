@@ -67,6 +67,28 @@ public:
             throw std::runtime_error("CapNoiseModel : bruit serie de reference nul (f_ser = 0 et enc_ref = enc0)");
     }
 
+    // Second constructeur : composantes donnees directement (modele ENC(tp, C), voir enc_model.hpp).
+    //   par2, ser02, can2 : e-^2 (bruit parallele, serie a C = 0, CAN) ; b : e-/pF ; c_ref_pf : pF.
+    // Les parametres de m_p (enc0, enc_ref, f_*) sont remplis avec les valeurs equivalentes.
+    CapNoiseModel(double par2, double ser02, double can2, double b, double c_ref_pf)
+    {
+        if (par2 < 0.0 || ser02 < 0.0 || can2 < 0.0)
+                                   throw std::runtime_error("CapNoiseModel : composantes de bruit negatives");
+        if (b < 0.0)               throw std::runtime_error("CapNoiseModel : la pente b doit etre >= 0");
+        if (c_ref_pf <= 0.0)       throw std::runtime_error("CapNoiseModel : c_ref_pf doit etre > 0");
+        const double e0 = par2 + ser02 + can2;
+        if (e0 <= 0.0)             throw std::runtime_error("CapNoiseModel : ENC a C = 0 nul");
+        m_par2 = par2; m_can2 = can2; m_ser02 = ser02; m_b = b;
+        const double br = b * c_ref_pf;
+        m_ser_ref = std::sqrt(ser02 + br * br);
+        if (m_ser_ref <= 0.0)
+            throw std::runtime_error("CapNoiseModel : bruit serie de reference nul");
+        m_p.enc0     = std::sqrt(e0);
+        m_p.enc_ref  = std::sqrt(par2 + can2 + m_ser_ref * m_ser_ref);
+        m_p.c_ref_pf = c_ref_pf;
+        m_p.f_par = par2; m_p.f_ser = ser02; m_p.f_can = can2;
+    }
+
     double slope() const    { return m_b; }                       // e-/pF
     double enc_par() const  { return std::sqrt(m_par2); }
     double enc_can() const  { return std::sqrt(m_can2); }
