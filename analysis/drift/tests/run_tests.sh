@@ -25,6 +25,11 @@ $CXX test_level0.cpp $SRC/weighting_potential.cpp -o test_level0
 $CXX test_level1.cpp $LIB -o test_level1
 $CXX test_level1_plateau.cpp $LIB -o test_level1_plateau
 $CXX test_selfcheck.cpp $LIB -o test_selfcheck
+$CXX test_noise.cpp $SRC/noise.cpp -o test_noise
+$CXX test_readout.cpp $SRC/readout.cpp $SRC/ghost.cpp $SRC/noise.cpp -o test_readout
+$CXX test_ghost.cpp $SRC/readout.cpp $SRC/ghost.cpp $SRC/noise.cpp -o test_ghost
+$CXX test_chain.cpp $SRC/readout.cpp $SRC/ghost.cpp $SRC/noise.cpp -o test_chain
+$CXX test_padnoise.cpp $SRC/readout.cpp $SRC/ghost.cpp $SRC/noise.cpp -o test_padnoise
 $CXX test_track.cpp $LIB -o test_track
 $CXX test_track_mc.cpp $SRC/weighting_potential.cpp -o test_track_mc
 $CXX -I$SRC test_level3.cpp $SRC/processor.cpp -o test_level3
@@ -60,3 +65,18 @@ python3 test_level2.py || true
 echo "=== niveau 3 : tirage du nombre d'electrons (Processor) ; la partie donnees reelles demande input_1000.h5 dans ce dossier ==="
 if [ -f input_1000.h5 ]; then python3 test_level3.py export input_1000.h5; fi
 ./test_level3
+
+echo "=== bruit electronique : normalisation ENC, autocorrelation, mise a l'echelle avec dt (sans HDF5) ==="
+./test_noise 2000 | grep -E "^T|^===|ECHEC|verifications"
+
+echo "=== lecture : liste unique de pads, flags, fenetre, seuil, appariement avec / sans bruit (sans HDF5) ==="
+./test_readout 3000 | grep -E "^R|ECHEC|verifications"
+
+echo "=== pads fantomes : covariance, probabilite p, forme sous condition, nombre binomial, flag 0 (sans HDF5) ==="
+./test_ghost 1 | grep -E "^===|ECHEC|verifications|seuil de production"
+
+echo "=== chaine de lecture : fenetre sur une famille de signaux, conservation de la charge, linearite signal / bruit (sans HDF5) ==="
+./test_chain | grep -E "^C|ECHEC|verifications"
+
+echo "=== bruit par pad selon la capacite : ENC(C), rms mesure, probabilite de fantome par ENC, fichier de capacites, Readout (sans HDF5) ==="
+./test_padnoise | grep -E "^===|^  info|ECHEC|verifications"
