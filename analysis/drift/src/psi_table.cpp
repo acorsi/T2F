@@ -54,6 +54,41 @@ void table_time_range(const TableParams& tp, double dtau, int& m_min, int& m_max
     if (m_max < tp.n_h + jmax + 2) m_max = tp.n_h + jmax + 2;
 }
 
+void table_grid(const TableParams& tp, std::vector<double>& step, std::vector<int>& nk)
+{
+    step.assign(tp.n_d, tp.step_out);
+    nk.assign(tp.n_d, tp.n_out);
+    if (!tp.adaptive) return;
+
+    // memes noeuds en d que PsiTable : equidistants en x = ln(sigma_anode)
+    const double plancher = 0.5 * tp.a / tp.m_cells;
+    const double c0 = tp.DT_ga * tp.DT_ga * tp.g + plancher * plancher;
+    const double x0 = 0.5 * std::log(c0);
+    const double x_max = 0.5 * std::log(tp.DT_kg * tp.DT_kg * tp.d_max + c0);
+    const double dx = (tp.n_d > 1) ? (x_max - x0) / (tp.n_d - 1) : 0.0;
+    const double U = (tp.n_out - 1) * tp.step_out;
+    for (int k = 0; k < tp.n_d; ++k) {
+        double s = tp.step_out * std::exp(x0 + k * dx - x0);       // step_out * sigma_k / sigma_0
+        if (tp.step_cap > 0.0 && s > tp.step_cap) s = tp.step_cap;
+        if (s < tp.step_out) s = tp.step_out;
+        int n = (int)std::ceil(U / s - 1.0e-9) + 1;
+        if (n < 4) n = 4;
+        if (n > tp.n_out) n = tp.n_out;
+        nk[k] = n;
+        step[k] = U / (n - 1);
+    }
+}
+
+double table_cells(const TableParams& tp)
+{
+    std::vector<double> step;
+    std::vector<int> nk;
+    table_grid(tp, step, nk);
+    double s = 0.0;
+    for (int k = 0; k < tp.n_d; ++k) s += (double)nk[k] * nk[k];
+    return s;
+}
+
 double PsiTable::sigma_T(double d) const {
     return m_tp.DT_kg * std::sqrt(d);
 }
@@ -94,8 +129,17 @@ PsiTable::PsiTable(const TableParams& tp)
     m_dx = (x_max - m_x0) / (tp.n_d - 1);
 
     const int n_tau = m_max - m_min + 1;
-    const size_t taille_d = (size_t)tp.n_out * tp.n_out * n_tau;
-    m_data.assign((size_t)tp.n_d * taille_d, 0.0f);
+
+    // grille (u,v) de chaque noeud en d
+    table_grid(tp, m_step, m_nk);
+    m_off.assign(tp.n_d + 1, 0);
+    m_offd.assign(tp.n_d + 1, 0);
+    for (int k = 0; k < tp.n_d; ++k) {
+        size_t cells = (size_t)m_nk[k] * m_nk[k];
+        m_off[k + 1]  = m_off[k]  + cells * n_tau;
+        m_offd[k + 1] = m_offd[k] + cells;
+    }
+    m_data.assign(m_off[tp.n_d], 0.0f);
 
     PhiSource src(tp.a, tp.g, tp.n_img, tp.m_cells, tp.r_src, tp.n_h, tp.ve_ga * m_dtau);
     m_phi_edge = src.edge_max();
@@ -112,29 +156,30 @@ PsiTable::PsiTable(const TableParams& tp)
         P.ve_ga    = tp.ve_ga;
         P.m_min    = m_min;
         P.m_max    = m_max;
-        P.n_out    = tp.n_out;
-        P.step_out = tp.step_out;
+        P.n_out    = m_nk[k];
+        P.step_out = m_step[k];
         build_psi(src, P, psi);
 
-        float* dest = &m_data[(size_t)k * taille_d];
+        const size_t taille_d = (size_t)m_nk[k] * m_nk[k] * n_tau;
+        float* dest = &m_data[m_off[k]];
         for (size_t q = 0; q < taille_d; ++q) dest[q] = (float)psi[q];
     }
 
-    // carte des maxima : pour chaque noeud (k, i, j), max sur tau de |Psi|
-    m_dmax.assign((size_t)tp.n_d * tp.n_out * tp.n_out, 0.0f);
+    // carte des maxima : pour chaque noeud (k, i, j), max sur tau de |Psi(tau+dtau) - Psi(tau)|
+    m_dmax.assign(m_offd[tp.n_d], 0.0f);
     for (int k = 0; k < tp.n_d; ++k) {
-      for (int q = 0; q < tp.n_out * tp.n_out; ++q) {
-	const float* p = &m_data[(size_t)k * taille_d + (size_t)q * n_tau];
-	float mx = 0.0f;
-	for (int n = 0; n + 1 < n_tau; ++n) {
-	  float a = p[n + 1] - p[n];
-	  if (a < 0.0f) a = -a;
-	  if (a > mx) mx = a;
-	}
-	m_dmax[(size_t)k * tp.n_out * tp.n_out + q] = mx;
-      }
+        const int ncell = m_nk[k] * m_nk[k];
+        for (int q = 0; q < ncell; ++q) {
+            const float* p = &m_data[m_off[k] + (size_t)q * n_tau];
+            float mx = 0.0f;
+            for (int n = 0; n + 1 < n_tau; ++n) {
+                float a = p[n + 1] - p[n];
+                if (a < 0.0f) a = -a;
+                if (a > mx) mx = a;
+            }
+            m_dmax[m_offd[k] + q] = mx;
+        }
     }
-    
 }
 
 int PsiTable::d_cell(double d) const {
@@ -149,70 +194,84 @@ int PsiTable::d_cell(double d) const {
 
 
 double PsiTable::dpsi_max(double u, double v, int kd) const {
-    const int n_out = m_tp.n_out;
-    int i0 = (int)(std::fabs(u) / m_tp.step_out);
-    int j0 = (int)(std::fabs(v) / m_tp.step_out);
     float m = 0.0f;
-    for (int kk = kd; kk <= kd + 1; ++kk)
+    for (int kk = kd; kk <= kd + 1; ++kk) {
+        const int n_out = m_nk[kk];
+        int i0 = (int)(std::fabs(u) / m_step[kk]);
+        int j0 = (int)(std::fabs(v) / m_step[kk]);
         for (int a = 0; a <= 1; ++a) {
             int i = i0 + a;
             if (i >= n_out) continue;
             for (int b = 0; b <= 1; ++b) {
                 int j = j0 + b;
                 if (j >= n_out) continue;
-                float w = m_dmax[((size_t)kk * n_out + i) * n_out + j];
+                float w = m_dmax[m_offd[kk] + (size_t)i * n_out + j];
                 if (w > m) m = w;
             }
         }
+    }
     // m = variation maximale sur UN pas de table ; un bin de lecture en couvre R
     return m * (float)m_tp.R;
 }
 
-void PsiTable::psi_vector(double u, double v, double d, double* out) const {
+// Liste des flux a combiner : pour chacun des 4 noeuds en d du stencil, 4 x 4 noeuds en (u,v)
+// de la grille PROPRE a ce noeud en d (symetrie : valeurs absolues de u et v).
+int PsiTable::flux_list(double u, double v, double d, const float** ptr, double* wgt) const {
     const int n_tau = m_max - m_min + 1;
-    const int n_out = m_tp.n_out;
-    for (int n = 0; n < n_tau; ++n) out[n] = 0.0;
 
     // --- position en d : cubique en x = ln(sigma_anode) ---
     if (d < 0.0) d = 0.0;
-    if (d > m_tp.d_max) d = m_tp.d_max;         // au-delà de d_max : dernière valeur
+    if (d > m_tp.d_max) d = m_tp.d_max;         // au-dela de d_max : derniere valeur
     double xs = (0.5 * std::log(m_tp.DT_kg * m_tp.DT_kg * d + m_c0) - m_x0) / m_dx;
-    // Stencil de 4 noeuds consécutifs b-1 ... b+2. Aux deux extrémités on décale le
+    // Stencil de 4 noeuds consecutifs b-1 ... b+2. Aux deux extremites on decale le
     // stencil (b entre 1 et n_d-3) : on interpole toujours, on n'extrapole jamais.
     int nd = m_tp.n_d;
     int b = (int)xs;
     if (b < 1) b = 1;
     if (b > nd - 3) b = nd - 3;
     double wd[4];
-    lagrange4(xs - b, wd);                      // t peut sortir de [0,1] de façon contrôlée
+    lagrange4(xs - b, wd);                      // t peut sortir de [0,1] de facon controlee
 
-    // --- position en u et v (symétrie : on prend les valeurs absolues) ---
-    double xu = std::fabs(u) / m_tp.step_out;
-    double xv = std::fabs(v) / m_tp.step_out;
-    int i0 = (int)xu;
-    int j0 = (int)xv;
-    if (i0 >= n_out || j0 >= n_out) return;     // hors table : Psi = 0
-    double wu[4], wv[4];
-    lagrange4(xu - i0, wu);
-    lagrange4(xv - j0, wv);
-
-    const size_t taille_d = (size_t)n_out * n_out * n_tau;
-
+    int ns = 0;
     for (int kk = 0; kk < 4; ++kk) {
-        const float* base = &m_data[(size_t)(b - 1 + kk) * taille_d];
+        const int node  = b - 1 + kk;
+        const int n_out = m_nk[node];
+        const double xu = std::fabs(u) / m_step[node];
+        const double xv = std::fabs(v) / m_step[node];
+        const int i0 = (int)xu;
+        const int j0 = (int)xv;
+        if (i0 >= n_out || j0 >= n_out) continue;      // hors table : Psi = 0
+        double wu[4], wv[4];
+        lagrange4(xu - i0, wu);
+        lagrange4(xv - j0, wv);
+        const float* base = &m_data[m_off[node]];
         for (int a = 0; a < 4; ++a) {
             int i = i0 - 1 + a;
             if (i < 0) i = -i;                  // miroir : noeud -1 = noeud 1
-            if (i >= n_out) continue;           // au-delà de la table : valeur nulle
-            for (int b = 0; b < 4; ++b) {
-                int j = j0 - 1 + b;
+            if (i >= n_out) continue;           // au-dela de la table : valeur nulle
+            for (int c = 0; c < 4; ++c) {
+                int j = j0 - 1 + c;
                 if (j < 0) j = -j;
                 if (j >= n_out) continue;
-                double w = wd[kk] * wu[a] * wv[b];
-                const float* p = base + ((size_t)i * n_out + j) * n_tau;
-                for (int n = 0; n < n_tau; ++n) out[n] += w * p[n];
+                ptr[ns] = base + ((size_t)i * n_out + j) * n_tau;
+                wgt[ns] = wd[kk] * wu[a] * wv[c];
+                ++ns;
             }
         }
+    }
+    return ns;
+}
+
+void PsiTable::psi_vector(double u, double v, double d, double* out) const {
+    const int n_tau = m_max - m_min + 1;
+    for (int n = 0; n < n_tau; ++n) out[n] = 0.0;
+    const float* ptr[64];
+    double       wgt[64];
+    const int ns = flux_list(u, v, d, ptr, wgt);
+    for (int s = 0; s < ns; ++s) {
+        const float* p = ptr[s];
+        const double w = wgt[s];
+        for (int n = 0; n < n_tau; ++n) out[n] += w * p[n];
     }
 }
 
@@ -269,58 +328,22 @@ void PsiTable::edges_values(const double* p, const int* idx, const double* w,
 
 void PsiTable::psi_vector_f(double u, double v, double d, float* out) const {
     const int n_tau = m_max - m_min + 1;
-    const int n_out = m_tp.n_out;
-
-    if (d < 0.0) d = 0.0;
-    if (d > m_tp.d_max) d = m_tp.d_max;
-    double xs = (0.5 * std::log(m_tp.DT_kg * m_tp.DT_kg * d + m_c0) - m_x0) / m_dx;
-    int nd = m_tp.n_d;
-    int kb = (int)xs;
-    if (kb < 1) kb = 1;
-    if (kb > nd - 3) kb = nd - 3;
-    double wd[4];
-    lagrange4(xs - kb, wd);
-
-    double xu = std::fabs(u) / m_tp.step_out;
-    double xv = std::fabs(v) / m_tp.step_out;
-    int i0 = (int)xu;
-    int j0 = (int)xv;
-    if (i0 >= n_out || j0 >= n_out) {
+    const float* dptr[64];
+    double       dwgt[64];
+    const int ns = flux_list(u, v, d, dptr, dwgt);
+    if (ns == 0) {
         for (int n = 0; n < n_tau; ++n) out[n] = 0.0f;
         return;
     }
-    double wu[4], wv[4];
-    lagrange4(xu - i0, wu);
-    lagrange4(xv - j0, wv);
-
-    const size_t taille_d = (size_t)n_out * n_out * n_tau;
-
-    // liste des flux (pointeur, poids)
     const float* ptr[64];
     float        wgt[64];
-    int ns = 0;
-    for (int kk = 0; kk < 4; ++kk) {
-        const float* base = &m_data[(size_t)(kb - 1 + kk) * taille_d];
-        for (int ia = 0; ia < 4; ++ia) {
-            int i = i0 - 1 + ia;
-            if (i < 0) i = -i;
-            if (i >= n_out) continue;
-            for (int jb = 0; jb < 4; ++jb) {
-                int j = j0 - 1 + jb;
-                if (j < 0) j = -j;
-                if (j >= n_out) continue;
-                ptr[ns] = base + ((size_t)i * n_out + j) * n_tau;
-                wgt[ns] = (float)(wd[kk] * wu[ia] * wv[jb]);
-                ++ns;
-            }
-        }
-    }
+    for (int s = 0; s < ns; ++s) { ptr[s] = dptr[s]; wgt[s] = (float)dwgt[s]; }
 
-    // accumulation par blocs de 8 valeurs, gardées en registres
+    // accumulation par blocs de 8 valeurs, gardees en registres
     const int B = 8;
     int n = 0;
     while (n < n_tau) {
-        if (n + B > n_tau) n = n_tau - B;          // dernier bloc décalé (recouvrement)
+        if (n + B > n_tau) n = n_tau - B;          // dernier bloc decale (recouvrement)
         float acc[B];
         for (int q = 0; q < B; ++q) acc[q] = 0.0f;
         for (int s = 0; s < ns; ++s) {
@@ -337,51 +360,16 @@ void PsiTable::psi_vector_f(double u, double v, double d, float* out) const {
 void PsiTable::psi_vector_g(double u, double v, double d, float* out) const {
     const int n_tau = m_max - m_min + 1;
     if (n_tau > 256) { psi_vector_f(u, v, d, out); return; }
-    const int n_out = m_tp.n_out;
-
-    if (d < 0.0) d = 0.0;
-    if (d > m_tp.d_max) d = m_tp.d_max;
-    double xs = (0.5 * std::log(m_tp.DT_kg * m_tp.DT_kg * d + m_c0) - m_x0) / m_dx;
-    int nd = m_tp.n_d;
-    int kb = (int)xs;
-    if (kb < 1) kb = 1;
-    if (kb > nd - 3) kb = nd - 3;
-    double wd[4];
-    lagrange4(xs - kb, wd);
-
-    double xu = std::fabs(u) / m_tp.step_out;
-    double xv = std::fabs(v) / m_tp.step_out;
-    int i0 = (int)xu;
-    int j0 = (int)xv;
-    if (i0 >= n_out || j0 >= n_out) {
+    const float* dptr[64];
+    double       dwgt[64];
+    const int ns = flux_list(u, v, d, dptr, dwgt);
+    if (ns == 0) {
         for (int n = 0; n < n_tau; ++n) out[n] = 0.0f;
         return;
     }
-    double wu[4], wv[4];
-    lagrange4(xu - i0, wu);
-    lagrange4(xv - j0, wv);
-
-    const size_t taille_d = (size_t)n_out * n_out * n_tau;
-
     const float* ptr[64];
     float        wgt[64];
-    int ns = 0;
-    for (int kk = 0; kk < 4; ++kk) {
-        const float* base = &m_data[(size_t)(kb - 1 + kk) * taille_d];
-        for (int ia = 0; ia < 4; ++ia) {
-            int i = i0 - 1 + ia;
-            if (i < 0) i = -i;
-            if (i >= n_out) continue;
-            for (int jb = 0; jb < 4; ++jb) {
-                int j = j0 - 1 + jb;
-                if (j < 0) j = -j;
-                if (j >= n_out) continue;
-                ptr[ns] = base + ((size_t)i * n_out + j) * n_tau;
-                wgt[ns] = (float)(wd[kk] * wu[ia] * wv[jb]);
-                ++ns;
-            }
-        }
-    }
+    for (int s = 0; s < ns; ++s) { ptr[s] = dptr[s]; wgt[s] = (float)dwgt[s]; }
 
     switch (n_tau) {
         case 54: accumulate_fixed<54>(ptr, wgt, ns, out); break;   // dga = 5 mm

@@ -48,9 +48,12 @@ void Processor::build_trace(const FragmentInput& frag_in,
     for (size_t i = 0; i < N; ++i) {
         double xi, yi, zi;
 
-	xi = va   + step * i * ux;
-	yi =        step * i * uy;  // vertex en y=0
-	zi = m_cfg.dkg / 2.0 + vb + step * i * uz;  // cible centrée à dkg/2
+	// raw_trace[i] = energie perdue entre i*step et (i+1)*step le long de la trace :
+	// le voxel est place au milieu de son intervalle
+	const double s_mid = step * ((double)i + 0.5);
+	xi = va   + s_mid * ux;
+	yi =        s_mid * uy;  // vertex en y=0
+	zi = m_cfg.dkg / 2.0 + vb + s_mid * uz;  // cible centrée à dkg/2
 	
         // Condition d'arrêt
         if (zi >= z_grid ) break;

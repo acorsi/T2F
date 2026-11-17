@@ -29,7 +29,9 @@ struct TableParams {
     // --- grille de la table ---
     int    n_d;        // nombre de noeuds en d (uniformes en ln sigma_anode(d), voir PsiTable)
     int    n_out;      // nombre de noeuds en u et en v (quart de plan)
-    double step_out;   // pas en u et v (cm)
+    double step_out;   // pas en u et v (cm) ; en mode adaptatif : pas du noeud d = 0 (le plus fin)
+    int    adaptive;   // 1 : le pas en u,v croit avec sigma_anode(d) (pas_k = step_out * sigma_k / sigma_0)
+    double step_cap;   // mode adaptatif : plafond du pas (cm), 0 = aucun
     int    n_h;        // nombre de pas de table dans le gap : n_h = ceil(g / (ve_ga * dtau))
     int    R;          // pas de table par bin de lecture : dtau = delta_t / R
     double dtau;       // pas de la table en tau (ns)
@@ -40,6 +42,14 @@ struct TableParams {
     int    m_cells;    // cellules par demi-pad
     double r_src;      // rayon de la source (cm)
 };
+
+// Grille (u,v) de chaque noeud en d : pas step[k] et nombre de noeuds nk[k] (u_i = i * step[k]).
+// Tous les noeuds couvrent la meme etendue U = (n_out - 1) * step_out.
+// Mode non adaptatif : step[k] = step_out et nk[k] = n_out pour tout k (comportement d'origine).
+// Partagee par PsiTable et derive_params pour que les deux restent d'accord.
+void   table_grid(const TableParams& tp, std::vector<double>& step, std::vector<int>& nk);
+// nombre total de noeuds (u,v) sur tous les d : somme des nk[k]^2 (memoire = ce nombre * n_tau * 4 octets)
+double table_cells(const TableParams& tp);
 
 // Plage des indices en tau de la table (tau = m * dtau) : m_min <= 0 ... m_max.
 // Partagée par PsiTable et derive_params pour que les deux restent d'accord.
@@ -60,8 +70,10 @@ public:
     // Au-delà de u_max ou v_max, Psi est pris nul : à ne pas utiliser plus loin.
     double u_max()   const { return (m_tp.n_out - 1) * m_tp.step_out; }
     size_t memory_bytes() const { return m_data.size() * sizeof(float); }
-    int    n_out()    const { return m_tp.n_out; }
-    double step_out() const { return m_tp.step_out; }
+    int    n_out()    const { return m_tp.n_out; }          // noeuds du noeud d = 0 (grille la plus fine)
+    double step_out() const { return m_tp.step_out; }       // pas du noeud d = 0
+    int    n_out_node(int k) const { return m_nk[k]; }
+    double step_node(int k)  const { return m_step[k]; }
     // max de |phi| au bord de la source (doit etre ~0 : sinon la source est tronquee trop tot)
     double phi_edge_max() const { return m_phi_edge; }
 
@@ -117,7 +129,14 @@ private:
     double m_c0;                 // DT_ga^2 g + plancher^2 : valeur de sigma_anode^2 en d = 0
     double m_x0, m_dx;
     double m_phi_edge;           // x = ln(sigma_anode) : x du noeud 0 et pas entre noeuds
-    std::vector<float> m_data; // [ ((k * n_out + i) * n_out + j) * n_tau + n ]
-    std::vector<float> m_dmax;
-    
+    std::vector<double> m_step;  // pas en u,v du noeud k
+    std::vector<int>    m_nk;    // nombre de noeuds en u et v du noeud k
+    std::vector<size_t> m_off;   // debut du noeud k dans m_data
+    std::vector<size_t> m_offd;  // debut du noeud k dans m_dmax
+    std::vector<float> m_data;   // [ m_off[k] + ((i * m_nk[k] + j) * n_tau + n ]
+    std::vector<float> m_dmax;   // [ m_offd[k] + i * m_nk[k] + j ]
+
+    // liste des (pointeur, poids) a combiner pour (u, v, d) ; renvoie le nombre de flux (<= 64)
+    int flux_list(double u, double v, double d, const float** ptr, double* wgt) const;
+
 };

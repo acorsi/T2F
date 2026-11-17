@@ -57,6 +57,9 @@ add_library(t2f_lib
     src/weighting_potential.cpp
     src/psi_builder.cpp
     src/psi_table.cpp
+    src/noise.cpp
+    src/ghost.cpp
+    src/readout.cpp
 )
 target_link_libraries(t2f_lib
     ${HDF5_LIBRARIES}
@@ -69,5 +72,13 @@ if(T2F_PROF)
 endif()
 
 # --- Exécutables ---
+# version du code (hash git), regeneree a chaque build : voir cmake/git_version.cmake
+add_custom_target(git_version ALL
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${CMAKE_BINARY_DIR}/git_version.hpp
+            -P ${CMAKE_SOURCE_DIR}/cmake/git_version.cmake
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/git_version.hpp)
+
 add_executable(process src/main.cpp)
+add_dependencies(process git_version)
+target_include_directories(process PRIVATE ${CMAKE_BINARY_DIR})
 target_link_libraries(process t2f_lib)
