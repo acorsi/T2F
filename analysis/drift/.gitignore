@@ -13,6 +13,10 @@ drift_output/*.pads.txt
 
 # --- Figures produites par les scripts d'analyse ---
 analysis/*.png
+# --- Fichier csv txt et bin produites par les scripts d'analyse ---
+analysis/*csv
+analysis/*txt
+analysis/*bin
 
 # --- Tests : executables (fichiers sans extension) et dossiers de resultats ---
 tests/test_*
