@@ -82,3 +82,6 @@ add_executable(process src/main.cpp)
 add_dependencies(process git_version)
 target_include_directories(process PRIVATE ${CMAKE_BINARY_DIR})
 target_link_libraries(process t2f_lib)
+
+add_executable(profile_basis src/profile_basis.cpp)
+target_link_libraries(profile_basis t2f_lib)
