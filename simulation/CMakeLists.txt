@@ -97,6 +97,7 @@ set(PHYSICS_SOURCES
     src/Particle.cpp
     src/Material.cpp
     src/DeDx_REAL.cpp
+    src/PHD.cpp
     src/StragglingBohr.cpp
     src/TraceSimulator.cpp
 )

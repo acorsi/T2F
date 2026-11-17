@@ -1,7 +1,8 @@
 #ifndef DEDX_REAL_H
 #define DEDX_REAL_H
 
-#include "IEnergyLossCalculator.h"
+#include "Particle.h"
+#include "Material.h"
 #include <vector>
 #include <map>
 #include <string>
@@ -18,7 +19,7 @@
  *
  * Retourne dE/dx en MeV/(mg/cm²).
  */
-class DeDx_REAL : public IEnergyLossCalculator {
+class DeDx_REAL{
 public:
     /**
      * Constructeur
@@ -30,24 +31,24 @@ public:
     /**
      * Destructeur
      */
-    ~DeDx_REAL() override = default;
+    ~DeDx_REAL()=default;
 
     /**
      * Charge la table pour le Z de la particule.
      * Appeler avant computeDeDx() pour chaque nouveau type de fragment.
      */
-    void initParticle(Particle* particle) override;
+    void initParticle(Particle* particle);
 
     /**
      * Calcule dE/dx par interpolation en KE/A.
      * @return dE/dx en MeV/(mg/cm²)
      */
-    double computeDeDx(Particle* particle, const Material& material) override;
+    double computeDeDx(Particle* particle, const Material& material);
 
     /**
      * Nom de la méthode
      */
-    std::string getMethodName() const override;
+    std::string getMethodName() const;
   /**
      * Pré-charge toutes les tables pour Z_min à Z_max.
      * Utile en mode parallèle pour éviter le chargement concurrent.

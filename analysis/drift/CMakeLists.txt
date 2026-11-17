@@ -28,9 +28,16 @@ include_directories(${HDF5_INCLUDE_DIRS})
 
 # --- OpenMP (transparent sur macOS/Linux) ---
 if(APPLE)
-    execute_process(COMMAND brew --prefix libomp
-                    OUTPUT_VARIABLE LIBOMP_PREFIX
-                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(EXISTS "$ENV{CONDA_PREFIX}/lib/libomp.dylib")
+        set(LIBOMP_PREFIX "$ENV{CONDA_PREFIX}")
+    else()
+        execute_process(COMMAND brew --prefix libomp
+                        OUTPUT_VARIABLE LIBOMP_PREFIX
+                        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    endif()
+    if(NOT EXISTS "${LIBOMP_PREFIX}/lib/libomp.dylib")
+        message(FATAL_ERROR "OpenMP introuvable : activer un environnement Conda contenant libomp.")
+    endif()
     set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp")
     set(OpenMP_CXX_LIB_NAMES "omp")
     set(OpenMP_omp_LIBRARY "${LIBOMP_PREFIX}/lib/libomp.dylib")

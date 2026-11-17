@@ -5,7 +5,7 @@
 #include "Material.h"
 //#include "DeDx_LG.h"
 #include "DeDx_REAL.h"
-#include "IEnergyLossCalculator.h"
+#include "PHD.h"
 //#include "processing/ITraceProcessor.h"
 #include <omp.h>
 
@@ -41,7 +41,7 @@ void SimulationPipeline::run(const std::filesystem::path &ELossPath) {
     //if(processor_) localProcessors.reserve(numThreads_);
     
     for (int i = 0; i < numThreads_; i++) {
-      IEnergyLossCalculator *dedx ;
+      DeDx_REAL *dedx ;
       std::cout << "Loading Simulators for thread " << i ; 
       Material* mat = new Material(*traceSimulator_->getMaterial());
      /* if(DEDX=="LG") {
@@ -58,7 +58,8 @@ void SimulationPipeline::run(const std::filesystem::path &ELossPath) {
 	  dedx = new DeDx_REAL(ELossPath,*mat,elosstreat_) ;
       StragglingBohr *stragglingbohr = new StragglingBohr(*mat) ;
       localSimulators.emplace_back(
-				   new TraceSimulator(mat, dedx, stragglingbohr, traceSimulator_->getStepSize())
+				   new TraceSimulator(mat, dedx, stragglingbohr, traceSimulator_->getStepSize(),
+                                   new PHD(traceSimulator_->getPHDCalculator()->getTablesDirectory(), *mat, elosstreat_))
 				  );
       
       //if(processor_) localProcessors.emplace_back(processor_->clone(i));
@@ -118,9 +119,10 @@ void SimulationPipeline::processFragmentPairWithSimulator(FragmentPair* pair, Tr
       : pair->getHeavyFragment();
     
     // Simulation trace avec le simulateur fourni
-    auto [clean,noisy,range] = simulator->simulate(frag);
+    auto [clean,noisy,range,phd] = simulator->simulate(frag);
     frag.setBetheTrace(clean);
     frag.setRawTrace(noisy);
+    frag.setPHDTrace(phd);
     //frag.setTrueRange(range) ;
 
     // std::cout << "Fragment " << i << std::endl ;

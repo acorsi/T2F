@@ -21,6 +21,7 @@ private:
   double trueR_;
   std::vector<double> betheTrace_;
   std::vector<double> rawTrace_;
+  std::vector<double> phdTrace_;
   std::vector<double> denoisedTrace_;
   std::optional<ProcessedData> processedData_;
   
@@ -62,6 +63,10 @@ public:
    */
   void setKineticEnergy(double tke) { kineticEnergy_ = tke; }
   
+  // PHD(E_begin/A) - PHD(E_end/A), in MeV, for each raw-trace step.
+  const std::vector<double>& getPHDTrace() const { return phdTrace_; }
+  void setPHDTrace(const std::vector<double>& trace) { phdTrace_ = trace; }
+
   // Getters/Setters traces
   const std::vector<double>& getRawTrace() const { return rawTrace_; }
   const std::vector<double>& getBetheTrace() const { return betheTrace_; }

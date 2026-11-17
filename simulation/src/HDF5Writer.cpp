@@ -305,6 +305,7 @@ void HDF5Writer::writeFragmentPair(const FragmentPair& pair, const int event_ID)
 */
     // betheTrace_light_.push_back(light.getBetheTrace());
     rawTrace_light_.push_back(light.getRawTrace());
+    phdTrace_light_.push_back(light.getPHDTrace());
     // denoisedTrace_light_.push_back(light.getDenoisedTrace());
     
     // Buffer heavy fragment
@@ -342,6 +343,7 @@ void HDF5Writer::writeFragmentPair(const FragmentPair& pair, const int event_ID)
 */
     // betheTrace_heavy_.push_back(heavy.getBetheTrace());
     rawTrace_heavy_.push_back(heavy.getRawTrace());
+    phdTrace_heavy_.push_back(heavy.getPHDTrace());
     // denoisedTrace_heavy_.push_back(heavy.getDenoisedTrace());
     
     bufferSize_ ++;
@@ -394,6 +396,7 @@ void HDF5Writer::flushBuffers() {
     */
     // writeVarLenColumnHelper(file_, "/L/bethe_trace", betheTrace_light_);
     writeVarLenColumnHelper(file_, "/L/raw_trace", rawTrace_light_);
+    writeVarLenColumnHelper(file_, "/L/phd_trace", phdTrace_light_);
     // writeVarLenColumnHelper(file_, "/L/denoised_trace", denoisedTrace_light_);
     
     writeColumnHelper(file_, "/H/A", A_heavy_, H5::PredType::NATIVE_INT);
@@ -430,6 +433,7 @@ void HDF5Writer::flushBuffers() {
   */  
     // writeVarLenColumnHelper(file_, "/H/bethe_trace", betheTrace_heavy_);
     writeVarLenColumnHelper(file_, "/H/raw_trace", rawTrace_heavy_);
+    writeVarLenColumnHelper(file_, "/H/phd_trace", phdTrace_heavy_);
     // writeVarLenColumnHelper(file_, "/H/denoised_trace", denoisedTrace_heavy_);
     writeColumnHelper(file_,"/event/angle",angle_,H5::PredType::NATIVE_DOUBLE);
     // Vider les buffers
@@ -467,6 +471,7 @@ void HDF5Writer::flushBuffers() {
 */
     // betheTrace_light_.clear() ;
     rawTrace_light_.clear() ;
+    phdTrace_light_.clear();
     // denoisedTrace_light_.clear() ;
     
     A_heavy_.clear();
@@ -504,6 +509,7 @@ void HDF5Writer::flushBuffers() {
   */
     // betheTrace_heavy_.clear() ;
     rawTrace_heavy_.clear() ;
+    phdTrace_heavy_.clear();
     // denoisedTrace_heavy_.clear() ;
     angle_.clear();
     bufferSize_ = 0;

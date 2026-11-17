@@ -1,9 +1,9 @@
 sequential no
 parallel 14 #number of cores
-evgenerator cgmf #gef, cgmf
+evgenerator gef #gef, cgmf
 events 1000000
 elossmodel G4 #G4 LG SRIM
-elosstreat native #native svd
+elosstreat svd #native svd
 stepsize 2
 pressure 300
-skipgefline 0 #1000000 #skip 1e6 gef lines to differentiate target from source
+skipgefline 1000000 #1000000 #skip 1e6 gef lines to differentiate target from source

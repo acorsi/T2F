@@ -4,10 +4,10 @@
 #include "Material.h"
 #include "Config.h"
 #include "DeDx_REAL.h"
+#include "PHD.h"
 #include "TraceSimulator.h"
 #include "SimulationPipeline.h"
 #include "StragglingBohr.h"
-#include "IEnergyLossCalculator.h"
 
 #include <iostream>
 #include <memory>
@@ -87,8 +87,10 @@ int main(int argc, char** argv) {
         // 2. Setup Physics
         //    
 
-        std::unique_ptr<IEnergyLossCalculator> energyLossCalc ;
+        std::unique_ptr<DeDx_REAL> energyLossCalc ;
+        std::unique_ptr<PHD> PHDCalc ;
         std::filesystem::path ELossPath;
+        std::filesystem::path PHDPath=base / "simulation/inputs/dedx/LG_tables/tables/phd_tables/";
 
         if (elosstreat=="native") {
             ELossPath = base / "simulation/inputs/dedx" / DEDX;   // from code
@@ -101,14 +103,17 @@ int main(int argc, char** argv) {
             "Unknown DEDX model: " + DEDX);
         }
 
+
+
         energyLossCalc = std::make_unique<DeDx_REAL>(ELossPath,*material,cfg.elosstreat);
+        PHDCalc = std::make_unique<PHD>(PHDPath,*material,cfg.elosstreat);
         //1 ligne commentaire puis TKE/A dEdx_tot(MeV*cm2/mg)
 
         std::unique_ptr<StragglingBohr> stragglingBohr = std::make_unique<StragglingBohr>(*material) ;
         std::unique_ptr<TraceSimulator> traceSimulator = std::make_unique<TraceSimulator>(material.release(),
                 energyLossCalc.release(),
                 stragglingBohr.release(),
-                stepSize);  // 2mm step
+                stepSize, PHDCalc.release());  // 2mm step
 
 
         // 3. Setup Processing
