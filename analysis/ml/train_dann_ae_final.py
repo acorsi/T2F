@@ -19,9 +19,16 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import time
 
+SEED = 44
+
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+
 # ── Config ────────────────────────────────────────────────────────────────────
-H5_SOURCE  = '../../simulation_output/T2F_G4_svd.h5'
-H5_TARGET  = '../../simulation_output/T2F_G4_native.h5'
+H5_SOURCE  = '../../simulation_output/T2F_gef_G4_svd.h5'
+H5_TARGET  = '../../simulation_output/T2F_gef_G4_native.h5'
 OUT_PDF    = 'explore_dann_ae_final.pdf'
 OUT_MODEL  = 'dann_ae_final_model.pt'
 
@@ -168,6 +175,8 @@ def load_dataset(path, labeled_frac=1.0):
         data = dict(
             raw_L_lab = f['L/raw_trace'][sl_lab],
             raw_H_lab = f['H/raw_trace'][sl_lab],
+            phd_L_lab = f['L/raw_trace'][sl_lab],
+            phd_H_lab = f['H/raw_trace'][sl_lab],
             Z_L_lab   = f['L/Z'][sl_lab].astype(int),
         )
         if labeled_frac < 1.0:
