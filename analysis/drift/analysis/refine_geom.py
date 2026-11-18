@@ -737,6 +737,7 @@ def main():
             print("  %-22s %+9.4f %9.4f %9.4f" % ((name, sm) + pct(d)[1:]))
     print("\nTableaux : %s_geom.csv, %s_prof.csv, %s_diag.csv, %s_flags.csv%s" %
           (a.out, a.out, a.out, a.out, (", %s_wsum.csv, %s_win.csv" % (a.out, a.out)) if win_rows else ""))
+    print("cache du blanchiment : %s" % wh.cache_info())
 
     if chg_rows:
         import matplotlib

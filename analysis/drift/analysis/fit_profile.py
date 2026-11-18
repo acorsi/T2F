@@ -139,12 +139,30 @@ class Whitener:
         self.caps = caps
         self.noise_on = noise_on
         self._chol = {}
+        self._linv = {}
 
     def chol(self, n, ser_scale):
         key = (n, round(ser_scale, 5))
         if key not in self._chol:
             self._chol[key] = np.linalg.cholesky(self.model.cov(n, ser_scale))
         return self._chol[key]
+
+    def chol_inv(self, n, ser_scale):
+        """inverse de L (L = Cholesky de la covariance du pad), calculee une fois par (n, ser_scale) :
+        blanchir devient un produit matriciel (au lieu d'un np.linalg.solve, donc d'une LU, a chaque appel)"""
+        key = (n, round(ser_scale, 5))
+        if key not in self._linv:
+            from scipy.linalg import solve_triangular
+            self._linv[key] = solve_triangular(self.chol(n, ser_scale), np.eye(n), lower=True)
+        return self._linv[key]
+
+    def cache_info(self):
+        """texte : nombre d'entrees et memoire des caches (controle)"""
+        mb = 0.0
+        for d in (self._chol, self._linv):
+            for v in d.values():
+                mb += v.nbytes / 1.0e6
+        return "%d matrices L, %d inverses, %.1f Mo au total" % (len(self._chol), len(self._linv), mb)
 
     def ser_scale(self, pid):
         if self.caps is None or int(pid) not in self.caps:
@@ -159,9 +177,9 @@ class Whitener:
         yw = np.empty_like(y)
         off = 0
         for pid, n in zip(pids, nts):
-            L = self.chol(int(n), self.ser_scale(pid))
-            Aw[:, off:off + n] = np.linalg.solve(L, A[:, off:off + n].T).T
-            yw[off:off + n] = np.linalg.solve(L, y[off:off + n])
+            Li = self.chol_inv(int(n), self.ser_scale(pid))
+            Aw[:, off:off + n] = A[:, off:off + n] @ Li.T
+            yw[off:off + n] = Li @ y[off:off + n]
             off += n
         return Aw, yw
 

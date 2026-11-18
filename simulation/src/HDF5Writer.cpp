@@ -367,7 +367,7 @@ void HDF5Writer::flushBuffers() {
     writeColumnHelper(file_, "/L/A", A_light_, H5::PredType::NATIVE_INT);
     writeColumnHelper(file_, "/L/Z", Z_light_, H5::PredType::NATIVE_INT);
     writeColumnHelper(file_, "/L/KE", KE_light_, H5::PredType::NATIVE_DOUBLE);
-    writeColumnHelper(file_, "/L/n", n_light_, H5::PredType::NATIVE_INT);
+    writeColumnHelper(file_, "/L/nu", n_light_, H5::PredType::NATIVE_INT);
 
     //writeColumnHelper(file_, "/Lf/I40", I40_light_, H5::PredType::NATIVE_DOUBLE);
     //writeColumnHelper(file_, "/Lf/Init", Init_light_, H5::PredType::NATIVE_DOUBLE);
@@ -402,7 +402,7 @@ void HDF5Writer::flushBuffers() {
     writeColumnHelper(file_, "/H/A", A_heavy_, H5::PredType::NATIVE_INT);
     writeColumnHelper(file_, "/H/Z", Z_heavy_, H5::PredType::NATIVE_INT);
     writeColumnHelper(file_, "/H/KE", KE_heavy_, H5::PredType::NATIVE_DOUBLE);
-    writeColumnHelper(file_, "/H/n", n_heavy_, H5::PredType::NATIVE_INT);
+    writeColumnHelper(file_, "/H/nu", n_heavy_, H5::PredType::NATIVE_INT);
 /*
     writeColumnHelper(file_, "/Hf/I40", I40_heavy_, H5::PredType::NATIVE_DOUBLE);
     writeColumnHelper(file_, "/Hf/Init", Init_heavy_, H5::PredType::NATIVE_DOUBLE);

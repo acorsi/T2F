@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
 
 
         //auto  gefFile = base / "simulation/inputs/gef/MyYields";
-        auto  gefFile = base / "simulation/inputs" / evgenerator /"MyYields";
+        auto  gefFile = base / "simulation/inputs" / evgenerator /"neutron_Yields";
         auto  hdf5File = base / "simulation_output" / ("T2F_"+evgenerator+"_"+DEDX+"_"+elosstreat+".h5");
 
 
