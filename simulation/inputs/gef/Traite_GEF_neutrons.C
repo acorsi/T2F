@@ -18,9 +18,9 @@ using namespace std;
 // /usr/bin/clang++ -std=c++17 -O2 -Wall $(root-config --cflags) -o Traite_GEF_neutrons Traite_GEF_neutrons.C $(root-config --libs)
 
 std::pair<double,double> RotateAnglesToLab(double theta,
-                                           double phi,
-                                           double Theta,
-                                           double Phi)
+        double phi,
+        double Theta,
+        double Phi)
 {
     // vecteur unitaire dans le repère local
     double st = std::sin(theta);
@@ -41,7 +41,7 @@ std::pair<double,double> RotateAnglesToLab(double theta,
         sP*cT*xp + cP*yp + sP*sT*zp;
 
     double z =
-       -sT*xp + cT*zp;
+        -sT*xp + cT*zp;
 
     // sécurité numérique
     if (z >  1.0) z =  1.0;
@@ -74,13 +74,13 @@ vector<float> read_particle_line(const string& line, int& tag) {
 
     return values;
 }
-TLorentzVector MakeFragmentLV(double A, double Z, double KE, double costh, double phi)
+TLorentzVector MakeFragmentLV(double A, double Z, double KE, double Eex, double costh, double phi)
 {
     constexpr double amu = 931.49410242; // MeV/c2
-    //double mass = GetMassMeV(A,Z); //A * amu;
-    double mass = gef_masses::GetNuclearMassMeV_fromBE(Z, A);
+                                         //double mass = GetMassMeV(A,Z); //A * amu;
+    double mass = gef_masses::GetNuclearMassMeV_fromBE(Z, A)+Eex;
     //cout<<Z<<" "<<A<<" "<<mass<<endl;
-    double Etot = KE + mass;
+    double Etot = KE + mass ;
     double p = std::sqrt(Etot * Etot - mass * mass);
 
     double sinth = std::sqrt(std::max(0.0, 1.0 - costh * costh));
@@ -110,13 +110,22 @@ TLorentzVector MakeNeutronLV(double T, double costh, double phi)
     v.SetPxPyPzE(px, py, pz, Etot);
     return v;
 }
-int main() {
 
-    ifstream in("y.lmd");
+int main(int argc, char* argv[]) {
+
+    if (argc != 3) {
+        cout << endl << "Usage: exe in_file out_file" << endl;
+        exit(1) ;
+    }    
+
+    ifstream in(argv[1]);
     if (!in) {
-        cerr << "Erreur: impossible d'ouvrir test.lmd" << endl;
+        cerr << "Erreur: impossible d'ouvrir lmd file" << endl;
         return 1;
     }
+
+    ofstream out ; out.open(argv[2],ios::out) ;
+
 
     string line;
     int CPT = 0;
@@ -130,7 +139,7 @@ int main() {
         if (is_blank_or_comment(line)) continue;
 
         int A1, Z1, A2, Z2, a1, a2, n1, n2;
-        float dum, KE1, KE2, TKE, tke;
+        float dum, KE1, KE2, KE1pre, KE2pre, TKE, tke, Eex1, Eex2;
 
         float fission_channel, ZCN, ACN, Eexc;
         float costh1, phi1, costh2, phi2;
@@ -141,9 +150,9 @@ int main() {
         ev >> fission_channel >> ZCN >> ACN >> Eexc
             >> Z1 >> Z2 >> a1 >> a2 >> A1 >> A2
             >> dum >> dum >> dum >> dum
-            >> dum >> KE1 >> costh1 >> phi1
-            >> dum >> KE2 >> costh2 >> phi2
-            >> dummy1 >> dummy2
+            >> KE1pre >> KE1 >> costh1 >> phi1
+            >> KE2pre >> KE2 >> costh2 >> phi2
+            >> Eex1 >> Eex2
             >> n1 >> n2 >> tke >> TKE >> dum;
 
         if (!ev) {
@@ -191,26 +200,22 @@ int main() {
             return 1;
         }
 
-        cout << Z1 << " " << A1 << " " << KE1 << " 0 "
+
+        // Fragment 1 : direction isotrope
+        TLorentzVector FF1_pre = MakeFragmentLV(a1, Z1, KE1pre, Eex1, costh1, phi1* M_PI / 180.0);
+        TLorentzVector FF1_post_gef = MakeFragmentLV(A1, Z1, KE1, 0,costh1, phi1* M_PI / 180.0);
+
+        // Fragment 2 : direction opposée
+        TLorentzVector FF2_pre = MakeFragmentLV(a2, Z2, KE2pre, Eex2, costh2, phi2* M_PI / 180.0);
+        TLorentzVector FF2_post_gef = MakeFragmentLV(A2, Z2, KE2, 0,costh2, phi2* M_PI / 180.0);
+        if(FF1_pre.Mag()<1.e-3 || FF2_pre.Mag()<1.e-3) continue ; //Ajout LG 18 Nov. 2026 pour sauter les cas où la masse n'est pas connue
+
+
+        out << Z1 << " " << A1 << " " << KE1 << " 0 "
             << Z2 << " " << A2 << " " << KE2 << " 0 "
             << n1 << " " << n2<<" ";
 
-        // Fragment 1 : direction isotrope
-        TLorentzVector FF1_pre = MakeFragmentLV(a1, Z1, KE1, costh1, phi1* M_PI / 180.0);
-
-        // Fragment 2 : direction opposée
-        TLorentzVector FF2_pre = MakeFragmentLV(a2, Z2, KE2, costh2, phi2* M_PI / 180.0);
-
-        ////get 4-moment of neutrons and sum them per fragment
-        vector<float> En;
-        for (int i = 0; i < n1; i++) {
-            En.push_back(v1[2*i]);
-        }
-        for (int i = 0; i < n2; i++) {
-            En.push_back(v2[2*i]);
-        }
-        double phif, costhf;
-        
+        ////get 4-moment of neutrons and sum them per fragment; in the frame of light fragment then rotated to lab frame //TO ADAPT IF CN FRAME DIFFERENT FROM LAB
         for (int i = 0; i < ntot; i++) {
             //if(i<n1)    cth=vdir[3*i+1];
             //else        cth=-vdir[3*i+1];
@@ -222,19 +227,11 @@ int main() {
             auto [theta_lab,phi_lab]=RotateAnglesToLab(acos(cth),phi,acos(costh1),phi1* M_PI / 180.0);
             vn.push_back(MakeNeutronLV(en, cos(theta_lab), phi_lab));
             //cout << "   " << En << " " << cth << " " << phi;
-            if(i<n1)    vn[i].Boost(FF1_pre.BoostVector());
-            else        vn[i].Boost(FF2_pre.BoostVector());
+            //if(i<n1)    vn[i].Boost(FF1_pre.BoostVector());
+            //else        vn[i].Boost(FF2_pre.BoostVector());
         }
-       /* 
-        for (int i = 0; i < ntot; i++) {
-            //En=vdir[3*i];
-            if(i<n1)    cth=vdir[3*i+1];
-            else        cth=-vdir[3*i+1];
-            phi=vdir[3*i+2]* M_PI / 180.0;
-            vn.push_back(MakeNeutronLV(En.at(i), cth, phi));
-        }
-        */
-        //cout<<"****"<<FF2_pre.BoostVector().Px()<<" "<<FF2_pre.BoostVector().Py()<<" "<<FF2_pre.BoostVector().Pz()<<endl;
+
+        //build post fragment vectors to get the angle and dump to output file
         TLorentzVector SumN1(0.,0.,0.,0.);
         TLorentzVector SumN2(0.,0.,0.,0.);
         for (int i=0; i<n1; i++)
@@ -243,29 +240,22 @@ int main() {
         for (int i=n1; i<n1+n2; i++)
             SumN2 += vn[i];
 
-
-        
-
         //Fragments post evaporation
         TLorentzVector FF1_post = FF1_pre-SumN1;
         TLorentzVector FF2_post = FF2_pre-SumN2;
-        /*cout<<"("; 
-        cout<<FF1_pre.Px()<<" "<<FF1_pre.Py()<<" "<<FF1_pre.Pz()<<" "<<FF1_pre.Mag()<<" ";
-        cout<<")"<<" (";
-        cout<<FF1_post.Px()<<" "<<FF1_post.Py()<<" "<<FF1_post.Pz()<<" "<<FF1_post.Mag()<<" ";
-        cout<<")"<<" (";
-        cout<<FF2_pre.Px()<<" "<<FF2_pre.Py()<<" "<<FF2_pre.Pz()<<" ";
-        cout<<")"<<" (";
-        cout<<FF2_post.Px()<<" "<<FF2_post.Py()<<" "<<FF2_post.Pz()<<" ";
-        cout<<")";
-        cout << endl;
-        cout<<"check "<<check.Px()<<" "<<check.Py()<<" "<<check.Pz()<<" "<<check.M()<<" "<<Eexc<<" "<<gef_masses::GetNuclearMassMeV_fromBE(98,252)-gef_masses::GetNuclearMassMeV_fromBE(Z1,a1)-gef_masses::GetNuclearMassMeV_fromBE(Z2,a2)<<" "<<tke<<endl;
-        */
-        //cout<<"costheta: "<<(FF1_pre.Vect()).Angle(FF2_pre.Vect())<<" "<<(FF1_post.Vect()).Angle(FF2_post.Vect())<<endl;
         double angle=(FF1_post.Vect()).Angle(FF2_post.Vect());
-        if(std::isnan(angle)) {angle=M_PI;/* cout<<(FF1_post.Vect()).Mag()<<" "<<(FF2_post.Vect()).Mag()<<endl;break;*/}
-        cout<<angle<<endl;
-        
+        if(std::isnan(angle)) {cerr<<"angle nan"<<endl; angle=M_PI;/* cout<<(FF1_post.Vect()).Mag()<<" "<<(FF2_post.Vect()).Mag()<<endl;break;*/}
+        out<<angle<<endl;
+
+        //4 momentum conservation
+        TLorentzVector check=FF1_pre+FF2_pre;
+        //cerr<<"check "<<check.Mag()-gef_masses::GetNuclearMassMeV_fromBE(98,252)<<endl;
+        //if(n1==0|| n2==0)cerr<<"Fragments :"<<FF1_post.Mag()-FF1_post_gef.Mag()<<" "<<Eex1<<"; "<<FF2_post.Mag()-FF2_post_gef.Mag()<<" "<<Eex2<<endl;
+        //cout<<"check "<<check.Px()<<" "<<check.Py()<<" "<<check.Pz()<<" "<<check.M()<<" "<<Eexc<<" "<<gef_masses::GetNuclearMassMeV_fromBE(98,252)-gef_masses::GetNuclearMassMeV_fromBE(Z1,a1)-gef_masses::GetNuclearMassMeV_fromBE(Z2,a2)<<" "<<tke<<endl;
+        //
+        double KE1_reco = FF1_post.E() - FF1_post.M();
+        double KE2_reco = FF2_post.E() - FF2_post.M();
+        if( abs(KE1_reco - KE1)>0.1||abs(KE2_reco - KE2)>0.1) cerr << "Delta KE1 = " << KE2_reco - KE2 <<" or "<<KE1_reco - KE1 << " MeV\n";
         h->Fill(((FF1_pre.Vect()).Angle(FF2_pre.Vect())-(FF1_post.Vect()).Angle(FF2_post.Vect()))/ M_PI * 180.0);
         h2->Fill(n1+n2,((FF1_pre.Vect()).Angle(FF2_pre.Vect())-(FF1_post.Vect()).Angle(FF2_post.Vect()))/ M_PI * 180.0);
 
