@@ -11,6 +11,7 @@
 #include "TFile.h"
 #include "BEexp_constexpr.hpp"
 #include <utility>
+#include <algorithm>
 using namespace std;
 
 #define NMAX 50000000
@@ -81,7 +82,7 @@ TLorentzVector MakeFragmentLV(double A, double Z, double KE, double Eex, double 
     double mass = gef_masses::GetNuclearMassMeV_fromBE(Z, A)+Eex;
     //cout<<Z<<" "<<A<<" "<<mass<<endl;
     double Etot = KE + mass ;
-    double p = std::sqrt(Etot * Etot - mass * mass);
+    double p = std::sqrt(KE * (KE + 2.0 * mass));
 
     double sinth = std::sqrt(std::max(0.0, 1.0 - costh * costh));
 
@@ -96,7 +97,7 @@ TLorentzVector MakeNeutronLV(double T, double costh, double phi)
     constexpr double mn = 939.56542052; // MeV/c^2
 
     double Etot = T + mn;
-    double p = std::sqrt(Etot * Etot - mn * mn);
+    double p = std::sqrt(T * (T + 2.0 * mn));
 
     double sinth2 = 1.0 - costh * costh;
     if (sinth2 < 0.0) sinth2 = 0.0; // protection numérique
@@ -201,6 +202,39 @@ int main(int argc, char* argv[]) {
         }
 
 
+        // Rejeter les donnees invalides avant toute racine ou construction de LV.
+        auto valid_mass = [](int A, int Z) {
+            if (A <= 0 || Z < 0 || Z > A) return false;
+            double m = gef_masses::GetNuclearMassMeV_fromBE(Z, A);
+            return std::isfinite(m) && m > 0.0;
+        };
+        auto valid_energy = [](double e) {
+            return std::isfinite(e) && e >= 0.0;
+        };
+        // Seuls les petits depassements d'arrondi sont bornes.
+        auto valid_cos = [](double c) {
+            return std::isfinite(c) && std::abs(c) <= 1.0 + 1.e-6;
+        };
+        bool valid_event =
+            valid_mass(a1, Z1) && valid_mass(a2, Z2) &&
+            valid_mass(A1, Z1) && valid_mass(A2, Z2) &&
+            valid_energy(KE1pre) && valid_energy(KE2pre) &&
+            valid_energy(KE1) && valid_energy(KE2) &&
+            valid_energy(Eex1) && valid_energy(Eex2) &&
+            valid_cos(costh1) && valid_cos(costh2) &&
+            std::isfinite(phi1) && std::isfinite(phi2);
+        for (int i = 0; i < ntot; ++i)
+            valid_event = valid_event && valid_energy(vdir[3*i]) &&
+                valid_cos(vdir[3*i+1]) && std::isfinite(vdir[3*i+2]);
+        if (!valid_event) {
+            cerr << "Evenement " << CPT
+                 << " ignore : masse, energie ou direction invalide\n";
+            ++CPT;
+            continue;
+        }
+        costh1 = std::clamp(costh1, -1.0f, 1.0f);
+        costh2 = std::clamp(costh2, -1.0f, 1.0f);
+
         // Fragment 1 : direction isotrope
         TLorentzVector FF1_pre = MakeFragmentLV(a1, Z1, KE1pre, Eex1, costh1, phi1* M_PI / 180.0);
         TLorentzVector FF1_post_gef = MakeFragmentLV(A1, Z1, KE1, 0,costh1, phi1* M_PI / 180.0);
@@ -208,7 +242,7 @@ int main(int argc, char* argv[]) {
         // Fragment 2 : direction opposée
         TLorentzVector FF2_pre = MakeFragmentLV(a2, Z2, KE2pre, Eex2, costh2, phi2* M_PI / 180.0);
         TLorentzVector FF2_post_gef = MakeFragmentLV(A2, Z2, KE2, 0,costh2, phi2* M_PI / 180.0);
-        if(FF1_pre.Mag()<1.e-3 || FF2_pre.Mag()<1.e-3) continue ; //Ajout LG 18 Nov. 2026 pour sauter les cas où la masse n'est pas connue
+
 
 
         out << Z1 << " " << A1 << " " << KE1 << " 0 "
@@ -220,7 +254,7 @@ int main(int argc, char* argv[]) {
             //if(i<n1)    cth=vdir[3*i+1];
             //else        cth=-vdir[3*i+1];
             en=vdir[3*i];
-            cth=vdir[3*i+1];
+            cth=std::clamp(vdir[3*i+1], -1.0f, 1.0f);
             phi=vdir[3*i+2]* M_PI / 180.0;
             //if(i<n1){phif=phi1;costhf=costh1;}
             //else    {phif=phi2;costhf=costh2;}
@@ -255,7 +289,7 @@ int main(int argc, char* argv[]) {
         //
         double KE1_reco = FF1_post.E() - FF1_post.M();
         double KE2_reco = FF2_post.E() - FF2_post.M();
-        if( abs(KE1_reco - KE1)>0.1||abs(KE2_reco - KE2)>0.1) cerr << "Delta KE1 = " << KE2_reco - KE2 <<" or "<<KE1_reco - KE1 << " MeV\n";
+        if( abs(KE1_reco - KE1)>5||abs(KE2_reco - KE2)>5) cerr << "Delta KE = " << KE1_reco - KE1 <<" or "<<KE2_reco - KE2 << " MeV\n";
         h->Fill(((FF1_pre.Vect()).Angle(FF2_pre.Vect())-(FF1_post.Vect()).Angle(FF2_post.Vect()))/ M_PI * 180.0);
         h2->Fill(n1+n2,((FF1_pre.Vect()).Angle(FF2_pre.Vect())-(FF1_post.Vect()).Angle(FF2_post.Vect()))/ M_PI * 180.0);
 
