@@ -18,6 +18,11 @@ Contenu d'un fichier (n evenements ; fragment 0 = demi-plan y > y_plane, fragmen
   tail_ratio (n,2)     moyenne des derniers noeuds / maximum du profil
   tail_sigma (n,2)     ecart-type de cette moyenne / maximum
   n_nodes (n,2)        nombre de noeuds de chaque fragment
+  frag_Z, frag_A (n,2) Z et A (verite de simulation) du fragment 0 et du fragment 1, ajoutes APRES la reconstruction ;
+                       -1 si le fichier d'entree n'a pas de /H, /L
+  frag_KE_true (n,2)   energie cinetique vraie (MeV) des fragments 0 et 1 (NaN si pas de labels)
+  label_cos (n,2)      cosinus entre la direction reconstruite et la direction vraie du fragment 0 et du fragment 1
+                       (controle de l'attribution ; NaN si pas de labels)
   prof_off (n+1)       prof_val[prof_off[e] : prof_off[e+1]] = noeuds du fragment 0 puis du fragment 1 de l'evenement e
   prof_val, prof_sig   dE/dx aux noeuds (e-/noeud, comme le serveur) et ecart-type (non contraint)
 Attributs : delta (cm), lam, lam_end_fac, lam_end_zone, y_plane, convention, version.
@@ -26,11 +31,14 @@ import h5py
 import numpy as np
 
 PER_EVENT = ["event_index", "event_id", "vertex", "u0", "u1", "params", "chi2_start", "chi2_geom", "chi2_prof",
-             "n_iter", "L_base", "dL", "not_contained", "tail_ratio", "tail_sigma", "n_nodes"]
+             "n_iter", "L_base", "dL", "not_contained", "tail_ratio", "tail_sigma", "n_nodes",
+             "frag_Z", "frag_A", "frag_KE_true", "label_cos"]
 SHAPES = {"event_index": (), "event_id": (), "vertex": (3,), "u0": (3,), "u1": (3,), "params": (6,), "chi2_start": (),
           "chi2_geom": (), "chi2_prof": (), "n_iter": (), "L_base": (2,), "dL": (2,), "not_contained": (2,),
-          "tail_ratio": (2,), "tail_sigma": (2,), "n_nodes": (2,)}
-DTYPES = {"event_index": "i8", "event_id": "i8", "n_iter": "i4", "not_contained": "i1", "n_nodes": "i4"}
+          "tail_ratio": (2,), "tail_sigma": (2,), "n_nodes": (2,), "frag_Z": (2,), "frag_A": (2,),
+          "frag_KE_true": (2,), "label_cos": (2,)}
+DTYPES = {"event_index": "i8", "event_id": "i8", "n_iter": "i4", "not_contained": "i1", "n_nodes": "i4",
+          "frag_Z": "i4", "frag_A": "i4"}
 
 
 def empty_arrays():

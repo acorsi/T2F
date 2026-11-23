@@ -3,8 +3,10 @@
 prod_refine.py : MODE PRODUCTION de la reconstruction des profils dE/dx. Meme algorithme que refine_geom.py
 (geometrie de depart par reco_split.estimate, affinage par Levenberg-Marquardt, rallonge de fin de profil, profil final
 avec lissage relache en fin de trace), mais :
-  - aucune information de verite n'est lue ni utilisee : le fichier d'entree n'a besoin que de /metadata, /pads,
-    /event_id et /P/{pid, pk0, pnt, pqn, phase}  (pas de /H, /L, /vertex, /P/pq, /P/pflag) ;
+  - aucune information de verite n'est utilisee par la reconstruction : elle n'a besoin que de /metadata, /pads,
+    /event_id et /P/{pid, pk0, pnt, pqn, phase}. Si le fichier a /H et /L (simulation), Z, A et KE vrais sont
+    ajoutes a la sortie APRES la reconstruction de chaque evenement (fonction truth_labels : recouvrement entre les
+    pads touches par les trajectoires vraies et les pads de chaque demi-plan), sans jamais l'influencer ;
   - aucun evenement n'est ecarte d'apres la verite ;
   - pas de figures, pas de diagnostics ; une seule geometrie (affinee) et un seul lissage (--lam) ;
   - le profil final est celui de la derniere evaluation de la phase de rallonge (meme geometrie, meme longueurs, meme lissage,
@@ -42,7 +44,7 @@ if os.environ.get("JAC_FAST", "1") != "0":
 import reco_split
 from reco_dir import pad_waveforms
 from rings import zero_window
-from t2f_io import pad_xy
+from t2f_io import pad_xy, read_vertex
 import prod_io
 
 
@@ -153,17 +155,71 @@ def extend_chunk_prod(ctx, chunk, lam, a):
             S["notc"], S["tailr"], S["tails"] = [s[0] for s in st], [s[1] for s in st], [s[2] for s in st]
 
 
+LABEL_STEP = 0.2   # pas (cm) le long de la trajectoire vraie projetee dans le plan (x, y)
+
+
+def truth_labels(env, a, i, u_rec):
+    """Labels de verite (Z, A, KE), attribues aux fragments 0/1 APRES la reconstruction de l'evenement i :
+    ils ne sont jamais utilises par elle.
+    Methode : pour H et pour L, pads de l'evenement (/P/pid) a moins d'un pitch de la trajectoire vraie projetee dans
+    (x, y) (pas de LABEL_STEP depuis le vertex, jusqu'au pad touche le plus eloigne) ; P_0, P_1 = pads de l'evenement dans
+    y > y_plane, y < y_plane (groupes utilises par la reconstruction). On retient l'affectation conjointe (H->0, L->1) ou
+    (H->1, L->0) qui maximise le nombre de pads communs. Un pad proche du vertex, touche par les deux traces, compte
+    pareil dans les deux affectations : il ne decide rien.
+    Renvoie (Z[2], A[2], KE[2], cos[2], egalite) ; Z = -1, A = -1, KE = NaN, cos = NaN si le fichier n'a pas de /H, /L
+    (donnees reelles) ; egalite = 1 si les deux affectations ont le meme score (a doit rester 0).
+    cos[k] = cosinus entre la direction reconstruite du fragment k et la direction vraie du fragment attribue (controle)."""
+    f = env.f
+    nul = ([-1, -1], [-1, -1], [np.nan, np.nan], [np.nan, np.nan], 0)
+    for g in ("H", "L"):
+        if ("/" + g) not in f or "Z" not in f["/" + g] or "theta" not in f["/" + g]:
+            return nul
+    pid = np.array(f["/P"]["pid"][i], dtype=int)
+    if len(pid) == 0:
+        return nul
+    px, py = pad_xy(env.geom, pid)
+    vx, vy, vz = read_vertex(f, i)
+    s = np.arange(0.0, float(np.hypot(px - vx, py - vy).max()) + env.pitch, LABEL_STEP)
+    side = [py > a.y_plane, py < a.y_plane]
+    u3, score = {}, {}
+    for g in ("H", "L"):
+        t, p = float(f["/%s/theta" % g][i]), float(f["/%s/phi" % g][i])
+        ux = np.sin(t) * np.cos(p)
+        if env.axis == "Y":
+            uy, uz = np.cos(t), np.sin(t) * np.sin(p)
+        else:
+            uy, uz = np.sin(t) * np.sin(p), np.cos(t)
+        u3[g] = np.array([ux, uy, uz])
+        n = np.hypot(ux, uy)
+        tx, ty = vx + s * ux / n, vy + s * uy / n
+        d2 = ((px[:, None] - tx[None, :]) ** 2 + (py[:, None] - ty[None, :]) ** 2).min(axis=1)
+        touched = d2 <= env.pitch ** 2
+        score[g] = [int((touched & side[k]).sum()) for k in range(2)]
+    sa = score["H"][0] + score["L"][1]
+    sb = score["H"][1] + score["L"][0]
+    kh = 0 if sa >= sb else 1
+    Z, A, KE, cs = [-1, -1], [-1, -1], [np.nan, np.nan], [np.nan, np.nan]
+    for g, k in (("H", kh), ("L", 1 - kh)):
+        Z[k], A[k], KE[k] = int(f["/%s/Z" % g][i]), int(f["/%s/A" % g][i]), float(f["/%s/KE" % g][i])
+        cs[k] = float(np.dot(u3[g], u_rec[k]))
+    return (Z, A, KE, cs, 1 if sa == sb else 0)
+
+
 class Collector:
     def __init__(self):
         self.rows = []
         self.val, self.sig = [], []
+        self.n_tie = 0
 
-    def add(self, S, a, event_id):
+    def add(self, S, a, event_id, env):
         r, c, sg, mh, ml = S["fin"]
         geo = rg.geo_from_params(S["p"], a.y_plane)
+        lab = truth_labels(env, a, S["event"], geo["u"])
+        self.n_tie += lab[4]
         self.rows.append((S["event"], event_id, geo["v"], geo["u"][0], geo["u"][1], S["p"], S["chi2d0"], S["chi2d1"],
                           float(r[:S["nr"]] @ r[:S["nr"]]) / S["nr"], S["nit"], list(S["Lb"]), list(S["dL"]),
-                          [1 if b else 0 for b in S["notc"]], list(S["tailr"]), list(S["tails"]), (mh, ml)))
+                          [1 if b else 0 for b in S["notc"]], list(S["tailr"]), list(S["tails"]), (mh, ml))
+                         + lab[:4])
         self.val.append(np.asarray(c, dtype=float))
         self.sig.append(np.asarray(sg, dtype=float))
 
@@ -207,7 +263,8 @@ def main():
     attrs = {"delta": a.delta, "lam": a.lam, "lam_geom": a.lam_geom, "lam_end_fac": a.lam_end_fac,
              "lam_end_zone": a.lam_end_zone, "y_plane": a.y_plane, "ext_step": a.ext_step, "ext_max": a.ext_max,
              "convention": "fragment 0 : demi-plan y > y_plane ; fragment 1 : demi-plan y < y_plane ; aucune identite H/L",
-             "source": a.h5file, "start": a.start, "version": "prod_refine 1"}
+             "source": a.h5file, "start": a.start, "version": "prod_refine 2",
+             "labels": "frag_Z, frag_A, frag_KE_true : verite de simulation ajoutee apres la reconstruction (H et L affectes aux fragments 0/1 par recouvrement entre pads touches par la trace vraie et pads de chaque demi-plan) ; -1 si absente"}
     # prefixe des fichiers d'echange (requete/reponse)
     if a.tmpdir:
         if not os.path.isdir(a.tmpdir):
@@ -244,7 +301,7 @@ def main():
                         S["Lr"] = Lk
             extend_chunk_prod(ctx, chunk, a.lam, a)
             for S in chunk:
-                coll.add(S, a, int(f["/event_id"][S["event"]]))
+                coll.add(S, a, int(f["/event_id"][S["event"]]), env)
             if (c0 - a.start) % (10 * a.chunk) == 0:
                 print("[prod_refine] evenements %d-%d traites (%d ecartes), %.0f s"
                       % (a.start, min(c0 + a.chunk, i1) - 1, len(skipped), time.time() - t_start), flush=True)
@@ -266,6 +323,8 @@ def main():
         for i, why in skipped:
             g.write("%d,%s\n" % (i, why.replace(",", ";")))
     n = len(d["event_index"])
+    print("[prod_refine] labels de verite : %d evenements etiquetes ; affectations a egalite : %d (doit rester 0)"
+          % (int((d["frag_Z"][:, 0] >= 0).sum()), coll.n_tie))
     print("[prod_refine] %d evenements ecrits dans %s_prod.h5, %d ecartes (%s_skipped.csv), %.0f s"
           % (n, a.out, len(skipped), a.out, time.time() - t_start))
     if n:
