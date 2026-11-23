@@ -39,6 +39,19 @@ struct FragTrace {
     const std::vector<double>* sigma_T;
 };
 
+// Resultat de project_hats pour UN chapeau : pour chaque pad demande touche, la fenetre de bins
+// [k0, k0 + n) dont les valeurs (charge induite par bin, en electrons) sont dans vals[off .. off + n).
+struct HatPad {
+    int    slot;     // numero du pad dans la liste des pads demandes
+    int    k0;
+    int    n;
+    size_t off;
+};
+struct HatResult {
+    std::vector<HatPad> pads;
+    std::vector<double> vals;
+};
+
 // ---------------------------------------------------------------------------
 // Paramètres géométriques
 // ---------------------------------------------------------------------------
@@ -97,6 +110,23 @@ public:
 		    std::vector<std::vector<double>>& qt_buf,
 		    std::vector<PadCharge>& resH,
 		    std::vector<PadCharge>& resL) const;    
+
+    // --- Version rapide pour la base de chapeaux (analyse seulement) ---
+    // Projette en un seul balayage TOUS les chapeaux d'une demi-droite.
+    //  x, y, z, s : voxels de la demi-droite, par abscisse s croissante (pas = step) ; ils servent aux deux
+    //               chapeaux voisins, avec les poids 1 - |s - m delta| / delta (comme build_voxels) ;
+    //  n_hats     : nombre de chapeaux (noeuds) ;
+    //  slot_of_pad: pour chaque pad du plan, son numero dans la liste des pads demandes, ou -1.
+    //               Les cellules dont aucun pad n'est demande sont sautees (resultat inchange pour les pads demandes).
+    //  out        : un HatResult par chapeau.
+    //  stats      : NULL, ou tableau de 2 compteurs : cellules a portee, cellules calculees (diagnostic).
+    // Thread-safe (aucun etat partage modifie).
+    void project_hats(const std::vector<double>& x, const std::vector<double>& y,
+                      const std::vector<double>& z, const std::vector<double>& s,
+                      double step, double delta, int n_hats,
+                      const std::vector<int>& slot_of_pad, int n_slots,
+                      const DetectorConfig& cfg,
+                      std::vector<HatResult>& out, long* stats) const;
 
     // Pour les tests : nombre de cellules, et charge perdue au-delà de r_active.
     int n_cells() const { return (int)m_cells.size(); }

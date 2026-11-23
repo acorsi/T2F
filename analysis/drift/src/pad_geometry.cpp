@@ -551,3 +551,195 @@ void PadPlane::project_pair(
 
     PROF(double w2 = omp_get_wtime(); S.t_out += w2 - w1; S.t_tot += w2 - w0;)
 }
+
+
+// ---------------------------------------------------------------------------
+// project_hats : tous les chapeaux d'une demi-droite en un balayage (analyse seulement).
+//
+// Pour chaque voxel (ordre des s croissants), le vecteur Psi et les differences de bord ne dependent
+// pas du chapeau : on les calcule UNE fois par couple (voxel, cellule), puis on les accumule, avec le poids
+// du voxel dans chaque chapeau (n_e = w * step, comme dans profile_basis), dans les tampons des deux chapeaux
+// voisins. Un chapeau est termine des que le balayage a depasse son support : il est alors copie dans out.
+// Les operations flottantes de chaque contribution sont les memes que dans project_pair
+// (dq = n_e * (eout[j+1] - eout[j]) ; buf += frac * dq), dans le meme ordre de voxels.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct HatWork {
+    int hat;                                   // numero du chapeau, -1 : libre
+    std::vector<std::vector<double> > buf;     // n_slots x n_bins, a zero hors usage
+    std::vector<int>  kmin, kmax;
+    std::vector<int>  list;                    // slots touches
+    std::vector<char> touched;
+};
+
+void hatwork_init(HatWork& w, int n_slots, int n_bins) {
+    w.hat = -1;
+    w.buf.assign(n_slots, std::vector<double>(n_bins, 0.0));
+    w.kmin.assign(n_slots, n_bins);
+    w.kmax.assign(n_slots, -1);
+    w.list.clear();
+    w.touched.assign(n_slots, 0);
+}
+
+// copie le chapeau termine dans res, remet les tampons a zero
+void hatwork_flush(HatWork& w, HatResult& res) {
+    for (size_t q = 0; q < w.list.size(); ++q) {
+        const int sl = w.list[q];
+        const int ka = w.kmin[sl], kb = w.kmax[sl];
+        HatPad hp;
+        hp.slot = sl;
+        hp.k0   = ka;
+        hp.n    = kb - ka + 1;
+        hp.off  = res.vals.size();
+        res.pads.push_back(hp);
+        for (int k = ka; k <= kb; ++k) { res.vals.push_back(w.buf[sl][k]); w.buf[sl][k] = 0.0; }
+        w.kmin[sl] = (int)w.buf[sl].size();
+        w.kmax[sl] = -1;
+        w.touched[sl] = 0;
+    }
+    w.list.clear();
+    w.hat = -1;
+}
+
+} // namespace
+
+void PadPlane::project_hats(
+    const std::vector<double>& x, const std::vector<double>& y,
+    const std::vector<double>& z, const std::vector<double>& s,
+    double step, double delta, int n_hats,
+    const std::vector<int>& slot_of_pad, int n_slots,
+    const DetectorConfig& cfg,
+    std::vector<HatResult>& out, long* stats) const
+{
+    const double p        = m_pitch;
+    const double delta_t  = cfg.delta_t;
+    const int    n_bins   = cfg.n_bins();
+    const double tau_lo   = m_table.tau_min();
+    const double tau_hi   = m_table.tau_max();
+    const int    n_tau    = m_table.n_tau();
+
+    out.assign(n_hats > 0 ? n_hats : 0, HatResult());
+    if (n_hats <= 0 || n_slots <= 0) return;
+
+    // cellules utiles : au moins un des pads de la cellule est demande
+    std::vector<char> keepC(m_cells.size(), 0);
+    for (size_t c = 0; c < m_cells.size(); ++c) {
+        const Cell& cl = m_cells[c];
+        for (int k = 0; k < cl.count; ++k)
+            if (slot_of_pad[m_contribs[cl.first + k].pad] >= 0) { keepC[c] = 1; break; }
+    }
+
+    // tampons locaux
+    std::vector<float> vecbuf(n_tau + 2);
+    float* vec = &vecbuf[1];
+    std::vector<double> vecd(n_tau);
+    std::vector<double> diff((size_t)((tau_hi - tau_lo) / delta_t) + 6);
+    std::vector<double> dq0(diff.size()), dq1(diff.size());
+    std::vector<int>    eidx(diff.size() + 1);
+    std::vector<double> eout(diff.size() + 1);
+    double ew[4];
+
+    const int POOL = 3;
+    HatWork work[POOL];
+    for (int a = 0; a < POOL; ++a) hatwork_init(work[a], n_slots, n_bins);
+
+    const size_t N = x.size();
+    for (size_t i = 0; i < N; ++i) {
+        // chapeaux qui recoivent ce voxel (poids > 0), comme build_voxels
+        const int mlow = (int)std::floor(s[i] / delta) - 1;
+        // les chapeaux < mlow sont termines
+        for (int a = 0; a < POOL; ++a)
+            if (work[a].hat >= 0 && work[a].hat < mlow) {
+                hatwork_flush(work[a], out[work[a].hat]);
+            }
+        int    hm[2]; double hne[2]; int nh = 0;
+        for (int m = mlow; m <= mlow + 3; ++m) {
+            if (m < 0 || m >= n_hats) continue;
+            const double w = 1.0 - std::fabs(s[i] - m * delta) / delta;
+            if (w <= 0.0) continue;
+            if (nh < 2) { hm[nh] = m; hne[nh] = w * step; ++nh; }
+        }
+        if (nh == 0) continue;
+
+        // tampons des chapeaux concernes
+        HatWork* hw[2] = { 0, 0 };
+        for (int a = 0; a < nh; ++a) {
+            for (int q = 0; q < POOL; ++q) if (work[q].hat == hm[a]) { hw[a] = &work[q]; break; }
+            if (!hw[a]) {
+                for (int q = 0; q < POOL; ++q) if (work[q].hat < 0) { hw[a] = &work[q]; hw[a]->hat = hm[a]; break; }
+            }
+            if (!hw[a]) throw std::runtime_error("project_hats : plus de tampon libre");
+        }
+
+        const double d   = cfg.drift_distance(z[i]);
+        const double t_g = cfg.t_grid(z[i]);
+        int k0 = (int)std::floor((t_g + tau_lo) / delta_t);
+        int k1 = (int)std::ceil ((t_g + tau_hi) / delta_t);
+        if (k0 < 0) k0 = 0;
+        if (k1 > n_bins) k1 = n_bins;
+        int nb = k1 - k0;
+        if (nb <= 0) continue;
+        if (nb > (int)diff.size()) nb = (int)diff.size();
+
+        const bool fast = m_table.edges_prepare(k0 * delta_t - t_g, delta_t, nb + 1, &eidx[0], ew);
+
+        int kt_min = (int)std::floor((y[i] - m_reach) / p);
+        int kt_max = (int)std::floor((y[i] + m_reach) / p);
+        for (int kt = kt_min; kt <= kt_max; ++kt) {
+            int    row = (kt >= 0) ? kt + 1 : kt;
+            double yc  = (kt + 0.5) * p;
+            double v   = y[i] - yc;
+            if (std::fabs(v) > m_reach) continue;
+            double x_offset = (row % 2 != 0) ? p / 2.0 : 0.0;
+            int col_min = (int)std::ceil ((x[i] - m_reach - x_offset) / p);
+            int col_max = (int)std::floor((x[i] + m_reach - x_offset) / p);
+            for (int col = col_min; col <= col_max; ++col) {
+                int ic = find_cell(row, col);
+                if (ic < 0) continue;
+                if (stats) stats[0]++;
+                if (!keepC[ic]) continue;
+                if (stats) stats[1]++;
+                const Cell& cell = m_cells[ic];
+                double u = x[i] - cell.x;
+
+                m_table.psi_vector_g(u, v, d, vec);
+                vecbuf[0]         = vec[0];
+                vecbuf[n_tau + 1] = vec[n_tau - 1];
+
+                if (fast) {
+                    m_table.edges_values_f(&vecbuf[0], &eidx[0], ew, nb + 1, &eout[0]);
+                    for (int j = 0; j < nb; ++j) dq0[j] = hne[0] * (eout[j + 1] - eout[j]);
+                    if (nh > 1) for (int j = 0; j < nb; ++j) dq1[j] = hne[1] * (eout[j + 1] - eout[j]);
+                } else {
+                    for (int n = 0; n < n_tau; ++n) vecd[n] = vec[n];
+                    double prev = m_table.psi_at(&vecd[0], k0 * delta_t - t_g);
+                    for (int j = 0; j < nb; ++j) {
+                        double next = m_table.psi_at(&vecd[0], (k0 + j + 1) * delta_t - t_g);
+                        const double df = next - prev;
+                        dq0[j] = hne[0] * df;
+                        if (nh > 1) dq1[j] = hne[1] * df;
+                        prev = next;
+                    }
+                }
+
+                for (int c = 0; c < cell.count; ++c) {
+                    const Contrib& ct = m_contribs[cell.first + c];
+                    const int sl = slot_of_pad[ct.pad];
+                    if (sl < 0) continue;
+                    for (int a = 0; a < nh; ++a) {
+                        HatWork& W = *hw[a];
+                        if (!W.touched[sl]) { W.touched[sl] = 1; W.list.push_back(sl); }
+                        if (k0 < W.kmin[sl])          W.kmin[sl] = k0;
+                        if (k0 + nb - 1 > W.kmax[sl]) W.kmax[sl] = k0 + nb - 1;
+                        double* buf = &W.buf[sl][k0];
+                        const double* dq = (a == 0) ? &dq0[0] : &dq1[0];
+                        for (int j = 0; j < nb; ++j) buf[j] += ct.frac * dq[j];
+                    }
+                }
+            }
+        }
+    }
+    for (int a = 0; a < POOL; ++a)
+        if (work[a].hat >= 0) hatwork_flush(work[a], out[work[a].hat]);
+}
