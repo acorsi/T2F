@@ -42,7 +42,7 @@ import matplotlib.pyplot as plt
 
 from t2f_io import pad_geometry, read_vertex, event_pads
 from view_fit import Response
-from reco_dir import true_direction, pad_waveforms, pct
+from reco_dir import true_direction, pad_waveforms, pct, strong_pads
 
 
 def lam_min_curve(xv, S, Sx, Sy, Sxx, Sxy, Syy, yp):
@@ -98,14 +98,14 @@ def fit_vertex_x(Xp, wp, Xm, wm, yp):
     return 0.5 * (lo + hi)
 
 
-def estimate(wfs, flag, x, y, area_h, m_h, thr, a, pitch, ve, dkg, t_off):
+def estimate(wfs, x, y, area_h, m_h, thr, a, pitch, ve, dkg, t_off):
     n = len(wfs)
     if n == 0:
         return None, "aucun pad"
     amp = np.array([w[1].max() for w in wfs])
     qint = np.array([w[1].sum() * (w[0][1] - w[0][0]) / area_h if len(w[1]) > 1 else 0.0 for w in wfs])
     amin = max(a.k_thr * thr, a.f_max * amp.max())
-    ok = (flag != 0) & (amp >= amin) & (qint > 0.5 * amp)
+    ok = strong_pads(amp, qint, amin, x, y, pitch, getattr(a, "n_nb", 2))
     on_plane = ok & (np.abs(y - a.y_plane) < 1.0e-9)
     ok = ok & ~on_plane
     ip = np.where(ok & (y > a.y_plane))[0]
@@ -177,6 +177,7 @@ def main():
     p.add_argument("--n", type=int, default=200)
     p.add_argument("--k_thr", type=float, default=10.0)
     p.add_argument("--f_max", type=float, default=0.1)
+    p.add_argument("--n_nb", type=int, default=2, help="pad utilise : au moins n_nb voisins (a moins de 1.5 pitch) eux-memes forts ; 0 = sans condition")
     p.add_argument("--min_half", type=int, default=3, help="pads forts minimum dans chaque demi-plan")
     p.add_argument("--sign_z", type=float, default=1.0)
     p.add_argument("--y_plane", type=float, default=0.0)
@@ -213,7 +214,7 @@ def main():
         ev = event_pads(f, i, geom)
         phase = int(f["/P/phase"][i])
         wfs = pad_waveforms(ev, phase, R, dt)
-        res, why = estimate(wfs, ev["pflag"], ev["x"], ev["y"], resp.area, m_h, thr, a, pitch, ve, dkg, t_off)
+        res, why = estimate(wfs, ev["x"], ev["y"], resp.area, m_h, thr, a, pitch, ve, dkg, t_off)
         if res is None:
             skipped[why] = skipped.get(why, 0) + 1
             continue

@@ -1,0 +1,12 @@
+build/
+__pycache__/
+*.pyc
+.DS_Store
+# resultats et donnees : jamais dans le depot
+*.h5
+*.bin
+*.tar
+*.tar.gz
+*.log
+tests/tmp/
+runs/

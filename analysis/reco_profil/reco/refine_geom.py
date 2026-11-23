@@ -27,6 +27,22 @@ retombe. Rien n'est modifie en silence : <out>_flags.csv (par fragment : rallong
 queue/max, deficit vs verite) ; <out>_win.csv marque par noeud la zone rallongee ; liste ATTENTION dans le resume.
 Le range pour l'identification est le point ou le profil ajuste retombe, jamais la fin de la grille.
 
+Pads non lus (--zero_ring 1, defaut ; --ring1_k 4, defaut) : un pad non lu a tous ses echantillons sous le seuil. Les pads de la couronne 2
+(voir rings.py : couronne 1 = non touches a moins de --ring_fac x pitch d'un pad touche, couronne 2 = idem autour de
+la couronne 1 ; fantomes retires d'abord par la regle "sans voisin") sont ajoutes au chi2 comme pseudo-donnees nulles
+(signal observe 0, bruit propre du pad, fenetre commune elargie du decalage temporel d'une rallonge). Ils contraignent
+les noeuds rallonges (et le reste du profil) : une charge inventee la ou aucun pad n'est lu est penalisee. La couronne 1
+reste libre (charge sous le seuil possible). Les pseudo-donnees sont dans le residu minimise (geometrie et profil) mais
+pas dans chi2/ndl, calcule sur les vraies lignes seulement. --zero_ring 0 = comportement d'origine, sans pseudo-donnees.
+Par defaut elles n'entrent dans le systeme qu'APRES l'affinage de la geometrie (rallonge et profils finaux) : la geometrie
+reste celle de la version sans pseudo-donnees, et le calcul est beaucoup plus rapide (--zero_in_geom 1 : comme avant).
+
+Lissage relache en fin de trace (--lam_end_fac 0.3, --lam_end_zone 1.2 cm, par defaut) : la penalite de difference seconde est
+multipliee par lam_end_fac sur les noeuds a l >= L_base - lam_end_zone (L_base = longueur de base du fragment, sans rallonge ;
+la zone couvre aussi les noeuds rallonges). La chute finale du profil est moins arrondie ; le reste du profil garde lam. Aucune
+information de simulation n'intervient. S'applique a la rallonge et aux profils finaux, pas a l'affinage de la geometrie.
+--lam_end_fac 1 = lissage uniforme (resultats d'avant). Diagnostic local de fin : <out>_fin.csv et section du resume (--end_zone).
+
 Usage :
   python3 refine_geom.py sortie.h5 --exe ../build/profile_basis --cfg ../drift.cfg --n 100 --out rg1
 """
@@ -43,6 +59,7 @@ from t2f_io import pad_geometry, read_vertex, event_pads, load_pad_capacitances
 from view_fit import Response, FitModel
 from reco_dir import pad_waveforms
 import reco_split
+from rings import PadRings, zero_window
 from fit_profile import (geometry_true, geometry_est, half_length, dist_to_segment, write_request,
                          read_response_iter, Whitener, solve_profile_r, truth_nodes)
 
@@ -119,6 +136,28 @@ def window_truth(dE, W, step, delta, M, w):
     return out
 
 
+def end_pos(q, delta, frac):
+    """position (cm) de la derniere descente sous frac x max de q (interpolation lineaire entre noeuds) ;
+    nan si q ne redescend pas sous ce seuil dans la grille (fin non contenue)."""
+    top = float(np.max(q))
+    if top <= 0.0:
+        return np.nan
+    thr = frac * top
+    idx = np.nonzero(q >= thr)[0]
+    j = int(idx[-1])
+    if j >= len(q) - 1:
+        return np.nan
+    q0, q1 = float(q[j]), float(q[j + 1])
+    return (j + (q0 - thr) / (q0 - q1)) * delta
+
+
+def rms_sel(d, sel, top):
+    """rms de d sur les noeuds sel, divise par top (nan si aucun noeud)"""
+    if not sel.any() or top <= 0.0:
+        return np.nan
+    return float(np.sqrt(np.mean(d[sel] ** 2)) / top)
+
+
 # ---------------------------------------------------------------------------
 class Server:
     """./profile_basis en mode serveur"""
@@ -166,15 +205,30 @@ class Ctx:
         self.a, self.server, self.wh, self.step, self.delta, self.y_plane, self.tmp = a, server, wh, step, delta, y_plane, tmp
 
 
+def use_full_rows(S):
+    """ajoute au systeme les pseudo-donnees nulles (couronnes) mises de cote dans build_state"""
+    F = S["full"]
+    if F is not None:
+        S["rows"], S["pids"], S["nts"], S["y"], S["wcol"] = F["rows"], F["pids"], F["nts"], F["y"], F["wcol"]
+        S["full"] = None
+
+
 def evaluate(ctx, items, lam, want_G=False):
     """items : liste de (S, p, alpha2, Lov) avec Lov = longueurs a utiliser (None : S["L"]) ;
     renvoie une liste de (r, c, sig, alpha2, mh, ml) dans le meme ordre
     (avec want_G : (r, c, sig, alpha2, mh, ml, G0, G), pour la matrice de resolution)"""
-    recs, byt = [], {}
+    recs, endws = [], {}
+    fac, zone = ctx.a.lam_end_fac, ctx.a.lam_end_zone
     for n, (S, p, alpha2, Lov) in enumerate(items):
         geo = geo_from_params(p, ctx.y_plane)
+        Ls = S["L"] if Lov is None else Lov
         recs.append({"tag": n, "phase": S["phase"], "v": geo["v"], "u": geo["u"],
-                     "L": S["L"] if Lov is None else Lov, "pads": S["rows"]})
+                     "L": Ls, "pads": S["rows"]})
+        # lissage relache en fin de trace : noeuds a l >= L_base - zone (L_base = longueur sans rallonge),
+        # seulement apres l'affinage de la geometrie (S["dL"] n'existe qu'a partir de extend_chunk)
+        if fac != 1.0 and zone > 0.0 and S.get("dL") is not None:
+            endws[n] = (fac, [max(1, int(np.ceil((Ls[k] - S["dL"][k] - zone) / ctx.delta - 1.0e-9)))
+                              for k in range(2)])
     req, rsp = ctx.tmp + "_req.txt", ctx.tmp + "_rsp.bin"
     write_request(req, ctx.step, ctx.delta, recs)
     ctx.server.run(req, rsp)
@@ -182,11 +236,15 @@ def evaluate(ctx, items, lam, want_G=False):
     for tag, mh, ml, A in read_response_iter(rsp):
         S, p, alpha2, Lov = items[tag]
         Aw, yw = ctx.wh.apply(S["pids"], S["nts"], A, S["y"])
+        if S["wcol"] is not None:                 # couronne 1 : contrainte faible (--ring1_k)
+            Aw = Aw * S["wcol"][None, :]
+            yw = yw * S["wcol"]
+        ew = None if tag not in endws else (endws[tag][0], endws[tag][1][0], endws[tag][1][1])
         if want_G:
-            c, sig, r, al, G0, G = solve_profile_r(Aw, yw, mh, ml, ctx.delta, lam, alpha2, want_G=True)
+            c, sig, r, al, G0, G = solve_profile_r(Aw, yw, mh, ml, ctx.delta, lam, alpha2, want_G=True, endw=ew)
             out[tag] = (r, c, sig, al, mh, ml, G0, G)
         else:
-            c, sig, r, al = solve_profile_r(Aw, yw, mh, ml, ctx.delta, lam, alpha2)
+            c, sig, r, al = solve_profile_r(Aw, yw, mh, ml, ctx.delta, lam, alpha2, endw=ew)
             out[tag] = (r, c, sig, al, mh, ml)
     return out
 
@@ -273,6 +331,7 @@ def refine_chunk(ctx, chunk, lam, free, max_iter, tol):
                     n += 1
     for S in chunk:
         S["chi2d1"] = float(S["r"][:S["nr"]] @ S["r"][:S["nr"]]) / S["nr"]
+        use_full_rows(S)        # a partir d'ici (rallonge, profils finaux), les pseudo-donnees nulles sont dans le systeme
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +409,7 @@ def add_common_args(p):
     p.add_argument("--no_check", action="store_true")
     p.add_argument("--k_thr", type=float, default=10.0)
     p.add_argument("--f_max", type=float, default=0.1)
+    p.add_argument("--n_nb", type=int, default=2, help="pad utilise pour l'estimation de depart : au moins n_nb voisins (a moins de 1.5 pitch) eux-memes forts ; 0 = sans condition")
     p.add_argument("--min_half", type=int, default=3)
     p.add_argument("--sign_z", type=float, default=1.0)
     p.add_argument("--y_plane", type=float, default=0.0)
@@ -366,6 +426,25 @@ def add_common_args(p):
     p.add_argument("--ext_max", type=float, default=3.0, help="rallonge maximale cumulee par fragment (cm)")
     p.add_argument("--win", type=float, default=0.5,
                    help="largeur (cm) de la moyenne glissante du profil fenetre, sortie au pas delta (0 = desactive)")
+    p.add_argument("--lam_end_fac", type=float, default=0.3,
+                   help="lissage relache en fin de trace : poids de la penalite multiplie par ce facteur sur les noeuds "
+                        "a l >= L_base - lam_end_zone, pour les profils finaux seulement (defaut 0.3 ; 1 = lissage uniforme)")
+    p.add_argument("--lam_end_zone", type=float, default=1.2,
+                   help="largeur (cm) de la zone de fin avant L_base, rallonge comprise (defaut 1.2)")
+    p.add_argument("--end_zone", type=float, default=1.0,
+                   help="diagnostic de fin de profil : zone de fin = noeuds a l >= L_vrai - end_zone (cm), "
+                        "jusqu'a la fin de la grille (comparaison avec le reste du profil)")
+    p.add_argument("--zero_ring", type=int, default=1,
+                   help="1 (defaut) = pads non lus de la couronne 2 ajoutes comme pseudo-donnees nulles (voir rings.py) ; "
+                        "0 = sans pseudo-donnees (comportement d'origine, --ring1_k alors ignore)")
+    p.add_argument("--zero_in_geom", type=int, default=0,
+                   help="1 = pseudo-donnees nulles aussi pendant l'affinage de la geometrie (lent) ; "
+                        "0 = seulement apres, pour la rallonge et les profils (defaut)")
+    p.add_argument("--ring1_k", type=float, default=4.0,
+                   help="couronne 1 en contrainte faible (avec --zero_ring 1) : pseudo-donnees nulles dont le bruit "
+                        "est gonfle k fois (k = seuil en sigma, 4 = read_thr_sigma, defaut) ; 0 = couronne 1 libre")
+    p.add_argument("--ring_fac", type=float, default=1.5,
+                   help="rayon de voisinage des couronnes, en pitchs (distance entre centres < ring_fac x pitch)")
 
 
 def parse_free(a):
@@ -402,6 +481,7 @@ class Env:
         self.geom = pad_geometry(f)
         self.wh = Whitener(self.model, load_pad_capacitances(f), self.noise_on)
         self.N = f["/event_id"].shape[0]
+        self.rings = PadRings(self.geom, a.ring_fac * self.pitch) if a.zero_ring else None
 
 
 def build_state(env, a, i):
@@ -414,7 +494,7 @@ def build_state(env, a, i):
     gt = geometry_true(f, i, env.axis, a.y_plane)
     if gt is None:
         return None, "verite : fragments du meme cote du plan"
-    res, why = reco_split.estimate(wfs, ev["pflag"], ev["x"], ev["y"], env.resp.area, env.m_h, env.thr, a,
+    res, why = reco_split.estimate(wfs, ev["x"], ev["y"], env.resp.area, env.m_h, env.thr, a,
                                    env.pitch, env.ve, env.dkg, env.t_off)
     if res is None:
         return None, "estimation : " + why
@@ -441,7 +521,42 @@ def build_state(env, a, i):
          "pq": float(ev["pq"].sum()),
          "pq_side": [float(ev["pq"][ev["y"] > a.y_plane].sum()),
                      float(ev["pq"][ev["y"] < a.y_plane].sum())],
-         "px": ev["x"].copy(), "py": ev["y"].copy(), "amp": amp}
+         "px": ev["x"].copy(), "py": ev["y"].copy(), "amp": amp, "nz": 0, "n1": 0, "ntz": 0, "wcol": None, "full": None}
+    if env.rings is not None:
+        # pseudo-donnees nulles : pads de couronne 2 (et de couronne 1, contrainte faible). Rangees apres les vraies
+        # lignes ; S["nr"] reste le nombre de vraies donnees, donc chi2/ndl ne change pas. Elles sont stockees dans
+        # S["full"] et n'entrent dans le systeme qu'apres l'affinage de la geometrie (use_full_rows, appele a la fin de
+        # refine_chunk) : la geometrie ne les voit pas (--zero_in_geom 1 pour les y inclure des le depart).
+        keep_w, ring1, ring2 = env.rings.split(ev["pid"])
+        win = zero_window(ev["pk0"][keep_w], ev["pnt"][keep_w],
+                          [g0["u"][0][2], g0["u"][1][2]], a.ext_max, env.ve, env.dt * env.R)
+        if win is not None:
+            used = set(int(r[0]) for r in S["rows"])
+            zp = [int(k) for k in ring2 if int(k) not in used]
+            j0z, ntz = win
+            rows, pids, nts, yv, wcol = list(S["rows"]), S["pids"], S["nts"], S["y"], None
+            if zp:
+                rows = rows + [(k, j0z, ntz) for k in zp]
+                pids = np.concatenate([pids, np.array(zp, dtype=int)])
+                nts = np.concatenate([nts, np.full(len(zp), ntz, dtype=int)])
+                yv = np.concatenate([yv, np.zeros(len(zp) * ntz)])
+                S["nz"], S["ntz"] = len(zp), ntz
+            if a.ring1_k > 0.0:
+                # couronne 1 : contrainte faible. Meme pseudo-donnee nulle, mais lignes blanchies divisees par k
+                # (bruit gonfle k fois : un signal modele de k sigma coute 1 au chi2). Rangees apres la couronne 2.
+                zp1 = [int(k) for k in ring1 if int(k) not in used]
+                if zp1:
+                    rows = rows + [(k, j0z, ntz) for k in zp1]
+                    pids = np.concatenate([pids, np.array(zp1, dtype=int)])
+                    nts = np.concatenate([nts, np.full(len(zp1), ntz, dtype=int)])
+                    yv = np.concatenate([yv, np.zeros(len(zp1) * ntz)])
+                    S["n1"], S["ntz"] = len(zp1), ntz
+                    wcol = np.ones(len(yv))
+                    wcol[len(yv) - len(zp1) * ntz:] = 1.0 / a.ring1_k
+            if len(yv) > len(S["y"]):
+                S["full"] = {"rows": rows, "pids": pids, "nts": nts, "y": yv, "wcol": wcol}
+                if a.zero_in_geom:
+                    use_full_rows(S)
     return S, ""
 
 
@@ -486,11 +601,29 @@ def main():
     print("[refine_geom] %d evenements a traiter, ecartes : %s" % (len(states), skipped if skipped else "aucun"))
     if not states:
         sys.exit(1)
+    if a.zero_ring:
+        nzs = np.array([S["nz"] for S in states], dtype=float)
+        ntzs = np.array([S["ntz"] for S in states if S["nz"] > 0], dtype=float)
+        nrs = np.array([S["nr"] for S in states], dtype=float)
+        print("[refine_geom] zero_ring : pads a signal nul ajoutes par evenement : mediane %d, max %d ; "
+              "fenetre commune : %d echantillons (mediane) ; echantillons nuls / vraies donnees : %.2f (mediane)"
+              % (np.median(nzs), nzs.max(), np.median(ntzs) if len(ntzs) else 0,
+                 np.median(nzs * np.array([S["ntz"] for S in states]) / nrs)))
+        if a.ring1_k > 0.0:
+            n1s = np.array([S["n1"] for S in states], dtype=float)
+            print("[refine_geom] ring1_k = %g : pads de couronne 1 en contrainte faible par evenement : mediane %d, max %d"
+                  % (a.ring1_k, np.median(n1s), n1s.max()))
+
+    if a.lam_end_fac != 1.0 and a.lam_end_zone > 0.0:
+        print("[refine_geom] lissage relache en fin de trace : penalite x %g sur les noeuds a l >= L_base - %.2f cm "
+              "(rallonge comprise), profils finaux seulement ; --lam_end_fac 1 = lissage uniforme"
+              % (a.lam_end_fac, a.lam_end_zone))
 
     server = Server(a.exe, a.cfg, a.exe_args.split())
     ctx = Ctx(a, server, wh, step, a.delta, a.y_plane, a.out)
     prof_rows, plots, geom_rows, diag_rows, chg_rows = [], {}, [], [], []
     win_rows, winprof_rows, wplots, wm_cache, flag_rows = [], [], {}, {}, []
+    fin_rows = []
     try:
         for c0 in range(0, len(states), a.chunk):
             chunk = states[c0:c0 + a.chunk]
@@ -569,6 +702,33 @@ def main():
                                                   float(np.sqrt(np.mean((Rt[sl] - qt[k]) ** 2)) / top),
                                                   float(np.sqrt(np.mean((cs[k] - Rt[sl]) ** 2)) / top),
                                                   float(np.sqrt(np.mean(np.clip(dcov[sl], 0.0, None))) / top)])
+                                # diagnostic local de fin de profil (lecture seule) : zone de fin (l >= L_vrai - end_zone)
+                                # contre reste du profil ; position de fin a 10 % et 25 % du max
+                                dEk = dEt[S["geot"]["truth"][k]]
+                                nzk = np.nonzero(dEk > 0)[0]
+                                if len(nzk):
+                                    Mk = (mh, ml)[k]
+                                    Lv = step * (nzk[-1] + 1)
+                                    lnod = a.delta * np.arange(Mk)
+                                    zf = lnod >= Lv - a.end_zone - 1.0e-9
+                                    zr = ~zf
+                                    fr_ = [i, v, lam, k, Lv]
+                                    fr_ += [rms_sel(cs[k] - qt[k], zf, top), rms_sel(Rt[sl] - qt[k], zf, top),
+                                            rms_sel(cs[k] - Rt[sl], zf, top),
+                                            rms_sel(cs[k] - qt[k], zr, top), rms_sel(Rt[sl] - qt[k], zr, top),
+                                            rms_sel(cs[k] - Rt[sl], zr, top)]
+                                    if a.win > 0.0:
+                                        if Mk not in wm_cache:
+                                            wm_cache[Mk] = window_matrix(Mk, a.delta, a.win)
+                                        Wk, wfk = wm_cache[Mk]
+                                        twk = window_truth(dEk, W, step, a.delta, Mk, a.win)
+                                        dw = Wk @ cs[k] - twk
+                                        fr_ += [rms_sel(dw, zf & wfk, twk.max()), rms_sel(dw, zr & wfk, twk.max())]
+                                    else:
+                                        fr_ += [np.nan, np.nan]
+                                    for frac in (0.10, 0.25):
+                                        fr_ += [end_pos(cs[k], a.delta, frac) - end_pos(qt[k], a.delta, frac)]
+                                    fin_rows.append(fr_)
                                 # profil fenetre : moyenne glissante de largeur a.win, sortie aux noeuds
                                 if a.win > 0.0:
                                     M = (mh, ml)[k]
@@ -629,6 +789,12 @@ def main():
         WS = np.array(win_rows, dtype=float)
         wscols = ["event", "geom(1=affine,2=vrai)", "lam", "frag", "rms_fenetre", "bruit_prevu", "rms_tnoeuds_tfenetre"]
         np.savetxt(a.out + "_wsum.csv", WS, delimiter=",", header=",".join(wscols), comments="")
+    if fin_rows:
+        FN = np.array(fin_rows, dtype=float)
+        fncols = ["event", "geom(1=affine,2=vrai)", "lam", "frag", "L_vrai_cm",
+                  "rms_fin", "biais_fin", "stat_fin", "rms_reste", "biais_reste", "stat_reste",
+                  "rmsfen_fin", "rmsfen_reste", "dL10_cm", "dL25_cm"]
+        np.savetxt(a.out + "_fin.csv", FN, delimiter=",", header=",".join(fncols), comments="")
     if winprof_rows:
         WP = np.array(winprof_rows, dtype=float)
         wpcols = ["event", "frag", "l_cm", "q_fen_est", "sigma_prevu", "q_fen_vrai", "q_noeud_vrai", "fenetre_entiere",
@@ -701,6 +867,32 @@ def main():
             print("%-9s  %-9g  %9.4f   %13.4f   %13.4f   %12.4f"
                   % (name, lam, np.median(r[:, 4]), np.median(r[:, 5]), np.median(r[:, 6]), np.median(r[:, 7])))
 
+    if fin_rows:
+        FN = np.array(fin_rows, dtype=float)
+        print("\n=== Diagnostic local de fin de profil (medianes, rms / max du profil vrai) ===")
+        print("zone de fin : noeuds a l >= L_vrai - %.2f cm jusqu'a la fin de la grille (L_vrai = fin des dE > 0) ;" % a.end_zone)
+        print("reste : tous les autres noeuds. biais = R.verite - verite ; stat = ajuste - R.verite ; fen = profil fenetre.")
+        print("dL10, dL25 = position de fin ajustee - vraie, a 10 % et 25 % du max (cm) ; |dL| : mediane, 68 %, 95 %.")
+        print("geometrie  lam        zone    rms     biais   stat    rms fen    |dL10| : med   68%    95%   signe med   |dL25| : med")
+        for v, name in ((1, "affinee"), (2, "vraie")):
+            for lam in lams:
+                sel = (FN[:, 1] == v) & (FN[:, 2] == lam)
+                if not sel.any():
+                    continue
+                r = FN[sel]
+                m10, p10, q10 = pct(r[:, 13])
+                sg10 = float(np.nanmedian(r[:, 13]))
+                m25 = pct(r[:, 14])[0]
+                print("%-9s  %-9g  fin    %7.4f %7.4f %7.4f %7.4f      %13.3f %6.3f %6.3f   %+8.3f   %13.3f"
+                      % (name, lam, np.nanmedian(r[:, 5]), np.nanmedian(r[:, 6]), np.nanmedian(r[:, 7]),
+                         np.nanmedian(r[:, 11]), m10, p10, q10, sg10, m25))
+                print("%-9s  %-9g  reste  %7.4f %7.4f %7.4f %7.4f"
+                      % (name, lam, np.nanmedian(r[:, 8]), np.nanmedian(r[:, 9]), np.nanmedian(r[:, 10]),
+                         np.nanmedian(r[:, 12])))
+        nn = int(np.sum(~np.isfinite(FN[(FN[:, 1] == 1) & (FN[:, 2] == lams[0])][:, 13])))
+        if nn:
+            print("(%d fragment(s) sans position de fin a 10 %% mesurable : fin non contenue dans la grille)" % nn)
+
     if win_rows:
         WS = np.array(win_rows, dtype=float)
         print("\n=== Profils fenetres : moyenne glissante w = %.2f cm, sortie au pas delta = %.2f cm ===" % (a.win, a.delta))
@@ -737,7 +929,8 @@ def main():
             print("  %-22s %+9.4f %9.4f %9.4f" % ((name, sm) + pct(d)[1:]))
     print("\nTableaux : %s_geom.csv, %s_prof.csv, %s_diag.csv, %s_flags.csv%s" %
           (a.out, a.out, a.out, a.out, (", %s_wsum.csv, %s_win.csv" % (a.out, a.out)) if win_rows else ""))
-    print("cache du blanchiment : %s" % wh.cache_info())
+    if fin_rows:
+        print("diagnostic de fin : %s_fin.csv" % a.out)
 
     if chg_rows:
         import matplotlib

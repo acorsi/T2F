@@ -139,30 +139,12 @@ class Whitener:
         self.caps = caps
         self.noise_on = noise_on
         self._chol = {}
-        self._linv = {}
 
     def chol(self, n, ser_scale):
         key = (n, round(ser_scale, 5))
         if key not in self._chol:
             self._chol[key] = np.linalg.cholesky(self.model.cov(n, ser_scale))
         return self._chol[key]
-
-    def chol_inv(self, n, ser_scale):
-        """inverse de L (L = Cholesky de la covariance du pad), calculee une fois par (n, ser_scale) :
-        blanchir devient un produit matriciel (au lieu d'un np.linalg.solve, donc d'une LU, a chaque appel)"""
-        key = (n, round(ser_scale, 5))
-        if key not in self._linv:
-            from scipy.linalg import solve_triangular
-            self._linv[key] = solve_triangular(self.chol(n, ser_scale), np.eye(n), lower=True)
-        return self._linv[key]
-
-    def cache_info(self):
-        """texte : nombre d'entrees et memoire des caches (controle)"""
-        mb = 0.0
-        for d in (self._chol, self._linv):
-            for v in d.values():
-                mb += v.nbytes / 1.0e6
-        return "%d matrices L, %d inverses, %.1f Mo au total" % (len(self._chol), len(self._linv), mb)
 
     def ser_scale(self, pid):
         if self.caps is None or int(pid) not in self.caps:
@@ -177,9 +159,9 @@ class Whitener:
         yw = np.empty_like(y)
         off = 0
         for pid, n in zip(pids, nts):
-            Li = self.chol_inv(int(n), self.ser_scale(pid))
-            Aw[:, off:off + n] = A[:, off:off + n] @ Li.T
-            yw[off:off + n] = Li @ y[off:off + n]
+            L = self.chol(int(n), self.ser_scale(pid))
+            Aw[:, off:off + n] = np.linalg.solve(L, A[:, off:off + n].T).T
+            yw[off:off + n] = np.linalg.solve(L, y[off:off + n])
             off += n
         return Aw, yw
 
@@ -197,11 +179,14 @@ def second_diff(M):
     return D
 
 
-def solve_profile_r(Aw, yw, Mh, Ml, delta, lam, alpha2=None, want_G=False):
+def solve_profile_r(Aw, yw, Mh, Ml, delta, lam, alpha2=None, want_G=False, endw=None):
     """min ||Aw^T c - yw||^2 + penalite, c >= 0. Aw : (nb, nr).
     Renvoie c, sigma (non contraint), residu complet r = [Aw^T c - yw ; racine(penalite) D c], alpha2 utilise.
     alpha2 : si None, calcule (mediane des ||colonne||^2 / delta^2) ; le fixer rend deux evaluations comparables.
-    want_G : renvoie en plus G0 = Aw Aw^T et G = G0 + penalite (pour la matrice de resolution)."""
+    want_G : renvoie en plus G0 = Aw Aw^T et G = G0 + penalite (pour la matrice de resolution).
+    endw : None, ou (fac, js_h, js_l) : le poids de la penalite est multiplie par fac pour les differences
+    secondes dont le noeud central est d'indice >= js (js_h pour le fragment 0, js_l pour le fragment 1) ;
+    fac < 1 relache le lissage en fin de trace."""
     nb, nr = Aw.shape
     G0 = Aw @ Aw.T
     rhs = Aw @ yw
@@ -211,8 +196,11 @@ def solve_profile_r(Aw, yw, Mh, Ml, delta, lam, alpha2=None, want_G=False):
         alpha2 = float(np.median(cn[good])) / delta ** 2 if good.any() else 1.0
     D = np.zeros((max(Mh - 2, 0) + max(Ml - 2, 0), nb))
     r = 0
-    for (M0, M) in ((0, Mh), (Mh, Ml)):
+    for kf, (M0, M) in enumerate(((0, Mh), (Mh, Ml))):
         d = second_diff(M)
+        if endw is not None and d.shape[0] > 0:
+            # la ligne m de d est centree sur le noeud m + 1
+            d = d * np.where(np.arange(d.shape[0]) + 1 >= endw[1 + kf], np.sqrt(endw[0]), 1.0)[:, None]
         D[r:r + d.shape[0], M0:M0 + M] = d
         r += d.shape[0]
     wreg = lam * alpha2 / delta ** 3
@@ -273,6 +261,7 @@ def main():
     # options de reco_split.estimate
     p.add_argument("--k_thr", type=float, default=10.0)
     p.add_argument("--f_max", type=float, default=0.1)
+    p.add_argument("--n_nb", type=int, default=2, help="pad utilise pour l'estimation de depart : au moins n_nb voisins (a moins de 1.5 pitch) eux-memes forts ; 0 = sans condition")
     p.add_argument("--min_half", type=int, default=3)
     p.add_argument("--sign_z", type=float, default=1.0)
     p.add_argument("--y_plane", type=float, default=0.0)
@@ -325,7 +314,7 @@ def main():
         if "true" in modes:
             geos["true"] = gt
         if "est" in modes:
-            res, why = reco_split.estimate(wfs, ev["pflag"], ev["x"], ev["y"], resp.area, m_h, thr, a, pitch, ve, dkg, t_off)
+            res, why = reco_split.estimate(wfs, ev["x"], ev["y"], resp.area, m_h, thr, a, pitch, ve, dkg, t_off)
             if res is None:
                 skip("estimation : " + why)
                 continue

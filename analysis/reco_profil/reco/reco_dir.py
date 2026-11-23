@@ -79,7 +79,23 @@ def pad_waveforms(ev, phase, R, dt):
     return out
 
 
-def estimate(wfs, flag, x, y, area_h, m_h, thr, a, pitch, ve, dkg, t_off):
+def strong_pads(amp, qint, amin, x, y, pitch, n_nb, fac=1.5):
+    """pads utilisables pour l'estimation, SANS le drapeau de simulation : amplitude >= amin, charge collectee
+    (qint > 0.5 amp) et au moins n_nb voisins (distance entre centres < fac x pitch) eux-memes forts selon le meme
+    critere (amplitude et charge). n_nb = 0 : pas de condition de voisinage."""
+    base = (amp >= amin) & (qint > 0.5 * amp)
+    ok = np.zeros(len(amp), dtype=bool)
+    idx = np.where(base)[0]
+    if n_nb <= 0 or len(idx) == 0:
+        return base
+    d = np.hypot(x[idx][:, None] - x[idx][None, :], y[idx][:, None] - y[idx][None, :])
+    np.fill_diagonal(d, np.inf)
+    cnt = (d < fac * pitch).sum(axis=1)
+    ok[idx[cnt >= n_nb]] = True
+    return ok
+
+
+def estimate(wfs, x, y, area_h, m_h, thr, a, pitch, ve, dkg, t_off):
     """Estimation de la direction. Renvoie (dict, None) ou (None, raison)."""
     n = len(wfs)
     if n == 0:
@@ -87,7 +103,7 @@ def estimate(wfs, flag, x, y, area_h, m_h, thr, a, pitch, ve, dkg, t_off):
     amp = np.array([w[1].max() for w in wfs])
     qint = np.array([w[1].sum() * (w[0][1] - w[0][0]) / area_h if len(w[1]) > 1 else 0.0 for w in wfs])
     amin = max(a.k_thr * thr, a.f_max * amp.max())
-    ok = (flag != 0) & (amp >= amin) & (qint > 0.5 * amp)
+    ok = strong_pads(amp, qint, amin, x, y, pitch, getattr(a, "n_nb", 2))
     idx = np.where(ok)[0]
     if len(idx) < 3:
         return None, "moins de 3 pads forts"
@@ -144,6 +160,7 @@ def main():
     p.add_argument("--n", type=int, default=200, help="nombre d'evenements traites")
     p.add_argument("--k_thr", type=float, default=10.0, help="pad fort : amplitude >= k_thr x seuil de lecture")
     p.add_argument("--f_max", type=float, default=0.1, help="pad fort : amplitude >= f_max x amplitude maximale")
+    p.add_argument("--n_nb", type=int, default=2, help="pad utilise : au moins n_nb voisins (a moins de 1.5 pitch) eux-memes forts ; 0 = sans condition")
     p.add_argument("--min_range", type=float, default=2.0, help="etendue minimale des pads forts (en pas de pad) pour la pente")
     p.add_argument("--sign_z", type=float, default=1.0, help="+1 : z croit vers la grille ; -1 pour inverser")
     p.add_argument("--y_plane", type=float, default=0.0, help="y du plan du vertex (cm) ; 0 : plan de symetrie de l'anode")
@@ -182,7 +199,7 @@ def main():
         ev = event_pads(f, i, geom)
         phase = int(f["/P/phase"][i])
         wfs = pad_waveforms(ev, phase, R, dt)
-        res, why = estimate(wfs, ev["pflag"], ev["x"], ev["y"], resp.area, m_h, thr, a, pitch, ve, dkg, t_off)
+        res, why = estimate(wfs, ev["x"], ev["y"], resp.area, m_h, thr, a, pitch, ve, dkg, t_off)
         if res is None:
             skipped[why] = skipped.get(why, 0) + 1
             continue
